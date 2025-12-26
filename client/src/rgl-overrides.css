@@ -1,0 +1,11 @@
+.react-grid-item {
+  overflow: visible;
+}
+
+.react-grid-item > div {
+  height: 100%;
+}
+
+.react-grid-item .MuiPaper-root {
+  height: 100%;
+}
