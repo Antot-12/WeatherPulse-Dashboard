@@ -1,5 +1,10 @@
 import type { GeoItem } from "./types";
 
+// API base URL - use Vercel backend in production, relative URL in development
+const API_BASE_URL = import.meta.env.PROD
+  ? "https://weather-pulse-dashboard-d181.vercel.app"
+  : "";
+
 type ApiOk<T> = { data: T };
 type ApiErr = { error?: string; message?: string; details?: unknown };
 
@@ -206,7 +211,7 @@ export type GeocodeOptions = {
 
 export async function geocode(q: string, options?: GeocodeOptions): Promise<GeoItem[]> {
   const limit = options?.limit ?? 5;
-  const url = `/api/geocode${qs({ q, limit })}`;
+  const url = `${API_BASE_URL}/api/geocode${qs({ q, limit })}`;
   return requestJsonDedupe<GeoItem[]>(url, {
     signal: options?.signal,
     timeoutMs: options?.timeoutMs,
@@ -239,7 +244,7 @@ export type ForecastResponse = {
 
 export async function getCurrent(lat: number, lon: number, options?: WeatherOptions): Promise<CurrentWeather> {
   const units = options?.units ?? "metric";
-  const url = `/api/weather/current${qs({ lat, lon, units })}`;
+  const url = `${API_BASE_URL}/api/weather/current${qs({ lat, lon, units })}`;
   return requestJsonDedupe<CurrentWeather>(url, {
     signal: options?.signal,
     timeoutMs: options?.timeoutMs,
@@ -250,7 +255,7 @@ export async function getCurrent(lat: number, lon: number, options?: WeatherOpti
 
 export async function getForecast(lat: number, lon: number, options?: WeatherOptions): Promise<ForecastResponse> {
   const units = options?.units ?? "metric";
-  const url = `/api/weather/forecast${qs({ lat, lon, units })}`;
+  const url = `${API_BASE_URL}/api/weather/forecast${qs({ lat, lon, units })}`;
   return requestJsonDedupe<ForecastResponse>(url, {
     signal: options?.signal,
     timeoutMs: options?.timeoutMs,
@@ -272,7 +277,7 @@ export type OneCallResponse = unknown;
 export async function getOneCall(lat: number, lon: number, options?: OneCallOptions): Promise<OneCallResponse> {
   const units = options?.units ?? "metric";
   const exclude = options?.exclude ?? "";
-  const url = `/api/weather/onecall${qs({ lat, lon, units, exclude })}`;
+  const url = `${API_BASE_URL}/api/weather/onecall${qs({ lat, lon, units, exclude })}`;
   return requestJsonDedupe<OneCallResponse>(url, {
     signal: options?.signal,
     timeoutMs: options?.timeoutMs ?? 12_000,
@@ -290,7 +295,7 @@ export type AqiOptions = {
 };
 
 export async function getAqi(lat: number, lon: number, options?: AqiOptions): Promise<AirAqiResponse> {
-  const url = `/api/air/aqi${qs({ lat, lon })}`;
+  const url = `${API_BASE_URL}/api/air/aqi${qs({ lat, lon })}`;
   return requestJsonDedupe<AirAqiResponse>(url, {
     signal: options?.signal,
     timeoutMs: options?.timeoutMs ?? 10_000,
@@ -318,7 +323,7 @@ export type IncidentsOptions = {
 
 export async function getIncidents(options?: IncidentsOptions): Promise<IncidentsResponse> {
   const limit = options?.limit ?? 50;
-  const url = `/api/incidents${qs({ limit })}`;
+  const url = `${API_BASE_URL}/api/incidents${qs({ limit })}`;
   return requestJsonDedupe<IncidentsResponse>(url, {
     signal: options?.signal,
     timeoutMs: options?.timeoutMs ?? 8000,
@@ -386,7 +391,7 @@ export type MetricsOptions = {
 };
 
 export async function getMetrics(options?: MetricsOptions): Promise<Metrics> {
-  const url = `/api/metrics`;
+  const url = `${API_BASE_URL}/api/metrics`;
   return requestJsonDedupe<Metrics>(url, {
     signal: options?.signal,
     timeoutMs: options?.timeoutMs,
@@ -416,7 +421,7 @@ export async function getBatchWeather(
 ): Promise<BatchResponse> {
   const units = options?.units ?? "metric";
 
-  const response = await fetch("/api/weather/batch", {
+  const response = await fetch(`${API_BASE_URL}/api/weather/batch`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

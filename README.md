@@ -113,14 +113,22 @@ WeatherPulse-Dashboard/
 
 ## 🚀 Quick Start
 
-### 1. Clone the repository
+### Option 1: Use Deployed Version
+
+The app is deployed and ready to use:
+- **Frontend (GitHub Pages)**: [https://antot-12.github.io/WeatherPulse-Dashboard](https://antot-12.github.io/WeatherPulse-Dashboard)
+- **Backend API (Vercel)**: [https://weather-pulse-dashboard-d181.vercel.app](https://weather-pulse-dashboard-d181.vercel.app)
+
+### Option 2: Run Locally
+
+#### 1. Clone the repository
 
 ```bash
 git clone https://github.com/Antot-12/WeatherPulse-Dashboard.git
 cd WeatherPulse-Dashboard
 ```
 
-### 2. Configure environment
+#### 2. Configure environment
 
 Create `server/.env`:
 
@@ -129,7 +137,7 @@ OPENWEATHER_API_KEY=your_api_key_here
 PORT=3001
 ```
 
-### 3. Start the server
+#### 3. Start the server
 
 ```bash
 cd server
@@ -139,7 +147,7 @@ npm run dev
 
 Server runs at: `http://localhost:3001`
 
-### 4. Start the client
+#### 4. Start the client
 
 ```bash
 cd client
@@ -148,6 +156,30 @@ npm run dev
 ```
 
 Client runs at: `http://localhost:5173`
+
+---
+
+## ☁️ Deployment
+
+### Backend (Vercel)
+
+The server is deployed as Vercel Serverless Functions.
+
+1. Connect your GitHub repo to Vercel
+2. Set the root directory to `server`
+3. Add environment variable:
+   - `OPENWEATHER_API_KEY` = your API key
+4. Deploy
+
+### Frontend (GitHub Pages)
+
+1. Update `API_BASE_URL` in `client/src/api.ts` to your Vercel backend URL
+2. Set base path in `client/vite.config.ts`:
+   ```ts
+   base: '/WeatherPulse-Dashboard/'
+   ```
+3. Build: `npm run build`
+4. Deploy `dist` folder to GitHub Pages
 
 ---
 
