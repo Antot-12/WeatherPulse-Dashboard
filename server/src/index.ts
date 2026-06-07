@@ -1,18 +1,22 @@
 import express from "express";
-import cors from "cors";
 import "dotenv/config";
 
 const app = express();
 
-// CORS configuration - allow all origins for API access
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Accept"]
-}));
+// Manual CORS middleware - set headers for every response
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
 
-// Handle preflight requests
-app.options("*", cors());
+  // Handle preflight requests
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  next();
+});
 
 app.use(express.json());
 
