@@ -1,5 +1,5 @@
 import * as d3 from "d3";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ForecastPoint } from "../types";
 
 type Props = {
@@ -41,10 +41,9 @@ function median(vals: number[]) {
 
 function formatTime(d: Date) {
   const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   const mo = String(d.getMonth() + 1).padStart(2, "0");
-  return `${dd}.${mo} ${hh}:${mm}`;
+  return `${dd}/${mo} ${hh}h`;
 }
 
 function fmtHum(v: number) {
@@ -149,30 +148,51 @@ export function HumidityChart({
                                 nightStartHour = 18,
                                 nightEndHour = 6,
                                 clampDomain = true,
-                                ticksX = 6,
+                                ticksX = 5,
                                 ticksY = 5,
                                 onHover,
                               }: Props) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const ref = useRef<SVGSVGElement | null>(null);
+  const [size, setSize] = useState({ width: 940, height: height });
+
+  // Measure actual container size
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const measure = () => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setSize({ width: Math.floor(rect.width), height: Math.floor(rect.height) });
+      }
+    };
+
+    measure();
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
 
   const safe = useMemo(() => cleanData(data), [data]);
   const band = useMemo(() => (safe.length >= 2 ? buildRollingBand(safe, bandWindow) : []), [safe, bandWindow]);
 
+  const actualWidth = size.width;
+  const actualHeight = size.height;
+
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || actualWidth < 50 || actualHeight < 50) return;
 
     const svg = d3.select<SVGSVGElement, unknown>(el);
     svg.selectAll("*").remove();
 
-    const width = 940;
-    const margin = { top: 16, right: 18, bottom: 40, left: 56 };
+    const margin = { top: 16, right: 60, bottom: 36, left: 45 };
 
     svg
-        .attr("viewBox", `0 0 ${width} ${height}`)
-        .attr("preserveAspectRatio", "none")
-        .style("width", "100%")
-        .style("height", "100%")
+        .attr("width", actualWidth)
+        .attr("height", actualHeight)
         .style("display", "block");
 
     if (!safe || safe.length < 2) {
@@ -206,14 +226,14 @@ export function HumidityChart({
     const yMin = clampDomain ? 0 : Math.max(0, yMinRaw - 6);
     const yMax = clampDomain ? 100 : Math.min(100, yMaxRaw + 6);
 
-    const x = d3.scaleTime().domain([x0, x1]).range([margin.left, width - margin.right]);
-    const y = d3.scaleLinear().domain([yMin, yMax]).nice().range([height - margin.bottom, margin.top]);
+    const x = d3.scaleTime().domain([x0, x1]).range([margin.left, actualWidth - margin.right]);
+    const y = d3.scaleLinear().domain([yMin, yMax]).nice().range([actualHeight - margin.bottom, margin.top]);
 
-    const axisColor = "rgba(255,255,255,0.34)";
-    const tickColor = "rgba(255,255,255,0.92)";
-    const gridColor = "rgba(255,255,255,0.06)";
+    const axisColor = "rgba(255,255,255,0.50)";
+    const tickColor = "rgba(255,255,255,1)";
+    const gridColor = "rgba(255,255,255,0.12)";
 
-    const plotH = height - margin.top - margin.bottom;
+    const plotH = actualHeight - margin.top - margin.bottom;
 
     if (showDayNight) {
       const intervals = nightIntervals(x0, x1, nightStartHour, nightEndHour);
@@ -232,7 +252,7 @@ export function HumidityChart({
     const yGrid = d3
         .axisLeft<number>(y)
         .ticks(ticksY)
-        .tickSize(-(width - margin.left - margin.right))
+        .tickSize(-(actualWidth - margin.left - margin.right))
         .tickFormat(() => "");
 
     svg
@@ -244,17 +264,22 @@ export function HumidityChart({
 
     svg
         .append("g")
-        .attr("transform", `translate(0,${height - margin.bottom})`)
-        .call(d3.axisBottom<Date>(x).ticks(ticksX).tickSizeOuter(0))
+        .attr("transform", `translate(0,${actualHeight - margin.bottom})`)
+        .call(d3.axisBottom<Date>(x).ticks(ticksX).tickSizeOuter(0).tickFormat((d) => {
+          const date = d as Date;
+          const dd = date.getDate();
+          const hh = date.getHours();
+          return `${dd}/${hh}h`;
+        }))
         .call((g) => g.selectAll("path,line").attr("stroke", axisColor))
-        .call((g) => g.selectAll("text").attr("fill", tickColor).attr("font-size", 13).attr("font-weight", 800));
+        .call((g) => g.selectAll("text").attr("fill", tickColor).attr("font-size", 11).attr("font-weight", 600));
 
     svg
         .append("g")
         .attr("transform", `translate(${margin.left},0)`)
         .call(d3.axisLeft<number>(y).ticks(ticksY).tickSizeOuter(0))
         .call((g) => g.selectAll("path,line").attr("stroke", axisColor))
-        .call((g) => g.selectAll("text").attr("fill", tickColor).attr("font-size", 13).attr("font-weight", 800));
+        .call((g) => g.selectAll("text").attr("fill", tickColor).attr("font-size", 11).attr("font-weight", 600));
 
     const curve = d3.curveMonotoneX;
 
@@ -286,7 +311,7 @@ export function HumidityChart({
     const area = d3
         .area<ForecastPoint>()
         .x((d) => x(d.date))
-        .y0(height - margin.bottom)
+        .y0(actualHeight - margin.bottom)
         .y1((d) => y(d.humidity))
         .curve(curve);
 
@@ -307,7 +332,7 @@ export function HumidityChart({
         .attr("stroke-width", 7)
         .attr("filter", "blur(2px)");
 
-    svg.append("path").datum(safe).attr("d", line).attr("fill", "none").attr("stroke", "rgba(37,243,225,0.96)").attr("stroke-width", 2.7);
+    svg.append("path").datum(safe).attr("d", line).attr("fill", "none").attr("stroke", "rgba(37,243,225,0.96)").attr("stroke-width", 3.5);
 
     const humValues = safe.map((d) => d.humidity);
     const avg = mean(humValues);
@@ -317,7 +342,7 @@ export function HumidityChart({
       svg
           .append("line")
           .attr("x1", margin.left)
-          .attr("x2", width - margin.right)
+          .attr("x2", actualWidth - margin.right)
           .attr("y1", y(avg))
           .attr("y2", y(avg))
           .attr("stroke", "rgba(255,255,255,0.18)")
@@ -325,12 +350,12 @@ export function HumidityChart({
 
       svg
           .append("text")
-          .attr("x", width - margin.right)
-          .attr("y", y(avg) - 8)
+          .attr("x", actualWidth - margin.right)
+          .attr("y", y(avg) - 10)
           .attr("text-anchor", "end")
-          .attr("fill", "rgba(255,255,255,0.72)")
+          .attr("fill", "rgba(255,255,255,1)")
           .attr("font-size", 12)
-          .attr("font-weight", 800)
+          .attr("font-weight", 600)
           .text(`avg ${fmtHum(avg)}`);
     }
 
@@ -338,7 +363,7 @@ export function HumidityChart({
       svg
           .append("line")
           .attr("x1", margin.left)
-          .attr("x2", width - margin.right)
+          .attr("x2", actualWidth - margin.right)
           .attr("y1", y(med))
           .attr("y2", y(med))
           .attr("stroke", "rgba(255,255,255,0.18)")
@@ -346,12 +371,12 @@ export function HumidityChart({
 
       svg
           .append("text")
-          .attr("x", width - margin.right)
-          .attr("y", y(med) - 8)
+          .attr("x", actualWidth - margin.right)
+          .attr("y", y(med) - 10)
           .attr("text-anchor", "end")
-          .attr("fill", "rgba(255,255,255,0.72)")
+          .attr("fill", "rgba(255,255,255,1)")
           .attr("font-size", 12)
-          .attr("font-weight", 800)
+          .attr("font-weight", 600)
           .text(`med ${fmtHum(med)}`);
     }
 
@@ -379,17 +404,17 @@ export function HumidityChart({
             .attr("stroke-width", 8)
             .attr("filter", "blur(0.2px)");
 
-        const placeLeft = cx > width - margin.right - 150;
+        const placeLeft = cx > actualWidth - margin.right - 150;
         const tx = placeLeft ? cx - 10 : cx + 10;
         const anchor = placeLeft ? "end" : "start";
 
         g.append("text")
             .attr("x", tx)
-            .attr("y", cy - 10)
+            .attr("y", cy - 14)
             .attr("text-anchor", anchor)
-            .attr("fill", "rgba(255,255,255,0.85)")
+            .attr("fill", "rgba(255,255,255,1)")
             .attr("font-size", 12)
-            .attr("font-weight", 900)
+            .attr("font-weight", 600)
             .text(m.label);
       }
     }
@@ -400,8 +425,8 @@ export function HumidityChart({
         .append("rect")
         .attr("x", margin.left)
         .attr("y", margin.top)
-        .attr("width", width - margin.left - margin.right)
-        .attr("height", height - margin.top - margin.bottom)
+        .attr("width", actualWidth - margin.left - margin.right)
+        .attr("height", actualHeight - margin.top - margin.bottom)
         .attr("fill", "transparent")
         .style("cursor", showTooltip ? "crosshair" : "default")
         .style("touch-action", "none");
@@ -411,7 +436,7 @@ export function HumidityChart({
     const focusLine = focus
         .append("line")
         .attr("y1", margin.top)
-        .attr("y2", height - margin.bottom)
+        .attr("y2", actualHeight - margin.bottom)
         .attr("stroke", "rgba(255,255,255,0.20)")
         .attr("stroke-dasharray", "3,6");
 
@@ -432,7 +457,7 @@ export function HumidityChart({
         .attr("fill", "rgba(10,14,22,0.92)")
         .attr("stroke", "rgba(37,243,225,0.20)");
 
-    const ttText = tooltip.append("text").attr("fill", "rgba(255,255,255,0.94)").attr("font-size", 13).attr("font-weight", 900);
+    const ttText = tooltip.append("text").attr("fill", "rgba(255,255,255,1)").attr("font-size", 12).attr("font-weight", 600);
 
     function move(mx: number) {
       const xDate = x.invert(mx);
@@ -474,11 +499,11 @@ export function HumidityChart({
       const pad = 12;
       ttBg.attr("width", bb.width + pad * 2).attr("height", bb.height + pad * 2);
 
-      const placeLeft = cx > width - margin.right - (bb.width + pad * 2) - 24;
+      const placeLeft = cx > actualWidth - margin.right - (bb.width + pad * 2) - 24;
       const tx = placeLeft ? cx - (bb.width + pad * 2) - 12 : cx + 12;
       const ty = Math.max(
           margin.top,
-          Math.min(cy - (bb.height + pad * 2) / 2, height - margin.bottom - (bb.height + pad * 2))
+          Math.min(cy - (bb.height + pad * 2) / 2, actualHeight - margin.bottom - (bb.height + pad * 2))
       );
 
       tooltip.attr("transform", `translate(${tx},${ty})`);
@@ -510,7 +535,8 @@ export function HumidityChart({
   }, [
     safe,
     band,
-    height,
+    actualWidth,
+    actualHeight,
     showTooltip,
     showAverageLine,
     showMedianLine,
@@ -525,5 +551,9 @@ export function HumidityChart({
     onHover,
   ]);
 
-  return <svg ref={ref} style={{ width: "100%", height: "100%", display: "block" }} />;
+  return (
+    <div ref={containerRef} style={{ width: "100%", height: "100%", flex: 1, minHeight: 0 }}>
+      <svg ref={ref} />
+    </div>
+  );
 }

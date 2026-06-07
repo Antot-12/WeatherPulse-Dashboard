@@ -1,12 +1,16 @@
 import * as d3 from "d3";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import Divider from "@mui/material/Divider";
 import Chip from "@mui/material/Chip";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
+import IconButton from "@mui/material/IconButton";
+import Tooltip from "@mui/material/Tooltip";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import PauseIcon from "@mui/icons-material/Pause";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import Collapse from "@mui/material/Collapse";
 import { getMetrics } from "../api";
 
@@ -14,23 +18,18 @@ type Metrics = {
     uptimeSec: number;
     node: string;
     updatedAt: string;
-
     requestsTotal: number;
     errorsTotal: number;
-
     req1m: number;
     rps1m: number;
     errors1m: number;
-
     openWeatherCalls: number;
     openWeatherErrors: number;
     owErrors1m: number;
-
     lastLatencyMs: number;
     avgLatencyMs: number;
     p50LatencyMs: number;
     p95LatencyMs: number;
-
     cacheSize: number;
     cacheHits: number;
     cacheMisses: number;
@@ -38,19 +37,15 @@ type Metrics = {
     cacheHits1m: number;
     cacheMisses1m: number;
     cacheHitRate1m: number;
-
     latencySeries: number[];
     rpsSeries: number[];
-
     eventLoopLagSeries: number[];
     eventLoopLagLastMs: number;
     eventLoopLagAvgMs: number;
     eventLoopLagP95Ms: number;
-
     topRoutes: { route: string; count: number }[];
     statusCounts: Record<string, number>;
     openWeatherStatusCounts: Record<string, number>;
-
     memoryMB: {
         rss: number;
         heapUsed: number;
@@ -62,10 +57,6 @@ type Metrics = {
 type PanelProps = {
     pollMs?: number;
     startCollapsed?: boolean;
-    topNRoutes?: number;
-    topNStatuses?: number;
-    showSparklines?: boolean;
-    showUpdatedChip?: boolean;
     onMetrics?: (m: Metrics) => void;
     onError?: (message: string) => void;
 };
@@ -75,28 +66,6 @@ function formatUptime(sec: number) {
     const m = Math.floor((sec % 3600) / 60);
     const s = sec % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-function formatAgo(iso: string) {
-    const t = new Date(iso).getTime();
-    if (!Number.isFinite(t)) return "—";
-    const diff = Date.now() - t;
-    if (diff < 0) return "now";
-    const s = Math.floor(diff / 1000);
-    if (s < 60) return `${s}s ago`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `${m}m ago`;
-    const h = Math.floor(m / 60);
-    if (h < 48) return `${h}h ago`;
-    const d = Math.floor(h / 24);
-    return `${d}d ago`;
-}
-
-function topN(obj: Record<string, number>, n: number) {
-    return Object.entries(obj ?? {})
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, n)
-        .map(([k, v]) => ({ k, v }));
 }
 
 function safeSeries(values: number[]) {
@@ -109,7 +78,6 @@ function slope(values: number[]) {
     const n = v.length;
     const xMean = (n - 1) / 2;
     const yMean = v.reduce((a, b) => a + b, 0) / n;
-
     let num = 0;
     let den = 0;
     for (let i = 0; i < n; i++) {
@@ -123,226 +91,144 @@ function slope(values: number[]) {
 
 function trendLabel(values: number[]) {
     const s = slope(values);
-    if (Math.abs(s) < 1e-9) return "flat";
-    return s > 0 ? "up" : "down";
+    if (Math.abs(s) < 1e-9) return "stable";
+    return s > 0 ? "↑" : "↓";
 }
 
-function Sparkline({
-                       values,
-                       height = 92,
-                       onHover,
-                       formatValue,
-                   }: {
-    values: number[];
-    height?: number;
-    onHover?: (v: number | null, index: number | null) => void;
-    formatValue?: (v: number) => string;
-}) {
+function MiniSparkline({ values, color = "rgba(37,243,225,0.9)" }: { values: number[]; color?: string }) {
+    const containerRef = useRef<HTMLDivElement | null>(null);
     const ref = useRef<SVGSVGElement | null>(null);
+    const [size, setSize] = useState({ width: 120, height: 28 });
+
+    // Measure actual container size
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const measure = () => {
+            const rect = container.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                setSize({ width: Math.floor(rect.width), height: Math.floor(rect.height) });
+            }
+        };
+
+        measure();
+
+        const ro = new ResizeObserver(measure);
+        ro.observe(container);
+        return () => ro.disconnect();
+    }, []);
+
+    const actualWidth = size.width;
+    const actualHeight = size.height;
 
     useEffect(() => {
         const el = ref.current;
-        if (!el) return;
+        if (!el || actualWidth < 20 || actualHeight < 10) return;
 
         const svg = d3.select<SVGSVGElement, unknown>(el);
         svg.selectAll("*").remove();
 
-        const width = 560;
-        const pad = 10;
+        const pad = 2;
 
         svg
-            .attr("viewBox", `0 0 ${width} ${height}`)
-            .attr("preserveAspectRatio", "none")
-            .style("width", "100%")
-            .style("height", `${height}px`)
+            .attr("width", actualWidth)
+            .attr("height", actualHeight)
             .style("display", "block");
 
         const v = safeSeries(values);
-        if (v.length < 2) {
-            onHover?.(null, null);
-            return;
-        }
+        if (v.length < 2) return;
 
         const data = v.map((vv, i) => ({ i, v: vv }));
-        const x = d3.scaleLinear().domain([0, data.length - 1]).range([pad, width - pad]);
-
+        const x = d3.scaleLinear().domain([0, data.length - 1]).range([pad, actualWidth - pad]);
         const ext = d3.extent(data, (d) => d.v) as [number, number];
         const span = Math.max(1e-9, ext[1] - ext[0]);
-        const y = d3
-            .scaleLinear()
-            .domain([ext[0] - span * 0.08, ext[1] + span * 0.08])
-            .nice()
-            .range([height - pad, pad]);
+        const y = d3.scaleLinear().domain([ext[0] - span * 0.1, ext[1] + span * 0.1]).range([actualHeight - pad, pad]);
 
-        const line = d3
-            .line<{ i: number; v: number }>()
-            .x((d) => x(d.i))
-            .y((d) => y(d.v))
-            .curve(d3.curveMonotoneX);
+        const line = d3.line<{ i: number; v: number }>().x((d) => x(d.i)).y((d) => y(d.v)).curve(d3.curveMonotoneX);
 
-        svg.append("path").datum(data).attr("fill", "none").attr("stroke", "rgba(37,243,225,0.26)").attr("stroke-width", 8).attr("filter", "blur(2px)").attr("d", line);
+        svg.append("path").datum(data).attr("fill", "none").attr("stroke", color).attr("stroke-width", 2).attr("d", line);
+    }, [values, actualWidth, actualHeight, color]);
 
-        svg.append("path").datum(data).attr("fill", "none").attr("stroke", "rgba(37,243,225,0.95)").attr("stroke-width", 2.6).attr("d", line);
-
-        if (!onHover) return;
-
-        const hover = onHover;
-        const fmt = formatValue;
-
-        const bisect = d3.bisector<{ i: number; v: number }, number>((d) => d.i).center;
-
-        const overlay = svg
-            .append("rect")
-            .attr("x", pad)
-            .attr("y", pad)
-            .attr("width", width - pad * 2)
-            .attr("height", height - pad * 2)
-            .attr("fill", "transparent")
-            .style("cursor", "crosshair")
-            .style("touch-action", "none");
-
-        const focus = svg.append("g").style("display", "none");
-        const focusDot = focus
-            .append("circle")
-            .attr("r", 4.5)
-            .attr("fill", "rgba(37,243,225,0.98)")
-            .attr("stroke", "rgba(37,243,225,0.30)")
-            .attr("stroke-width", 8)
-            .attr("filter", "blur(0.2px)");
-
-        const tooltip = svg.append("g").style("display", "none").attr("pointer-events", "none");
-        const ttBg = tooltip.append("rect").attr("rx", 10).attr("ry", 10).attr("fill", "rgba(10,14,22,0.92)").attr("stroke", "rgba(37,243,225,0.20)");
-        const ttText = tooltip.append("text").attr("fill", "rgba(255,255,255,0.94)").attr("font-size", 12).attr("font-weight", 900);
-
-        function move(mx: number) {
-            const iFloat = x.invert(mx);
-            const idx = bisect(data, iFloat);
-            const i = Math.max(0, Math.min(data.length - 1, idx));
-            const p = data[i];
-
-            focus.style("display", null);
-            tooltip.style("display", null);
-
-            const cx = x(p.i);
-            const cy = y(p.v);
-            focusDot.attr("cx", cx).attr("cy", cy);
-
-            hover(p.v, i);
-
-            const label = fmt ? fmt(p.v) : String(p.v);
-
-            ttText.selectAll("*").remove();
-            ttText.append("tspan").attr("x", 0).attr("dy", "1.15em").text(label);
-
-            const bb = (ttText.node() as SVGTextElement | null)?.getBBox();
-            if (!bb) return;
-
-            const pad2 = 10;
-            ttBg.attr("width", bb.width + pad2 * 2).attr("height", bb.height + pad2 * 2);
-
-            const placeLeft = cx > width - pad - (bb.width + pad2 * 2) - 24;
-            const tx = placeLeft ? cx - (bb.width + pad2 * 2) - 12 : cx + 12;
-            const ty = Math.max(pad, Math.min(cy - (bb.height + pad2 * 2) / 2, height - pad - (bb.height + pad2 * 2)));
-
-            tooltip.attr("transform", `translate(${tx},${ty})`);
-            ttText.attr("transform", `translate(${pad2},${pad2 - 7})`);
-        }
-
-        overlay
-            .on("pointerenter", () => {
-                focus.style("display", null);
-                tooltip.style("display", null);
-            })
-            .on("pointerleave", () => {
-                focus.style("display", "none");
-                tooltip.style("display", "none");
-                hover(null, null);
-            })
-            .on("pointermove", (event: PointerEvent) => {
-                const node = overlay.node();
-                if (!node) return;
-                const [mx] = d3.pointer(event, node);
-                move(mx + pad);
-            });
-    }, [values, height, onHover, formatValue]);
-
-    return <svg ref={ref} style={{ width: "100%", height: `${height}px`, display: "block" }} />;
+    return (
+        <div ref={containerRef} style={{ width: "100%", height: "28px", flex: 1, minHeight: 0 }}>
+            <svg ref={ref} />
+        </div>
+    );
 }
 
-function StatCell({ label, value, emphasize }: { label: string; value: ReactNode; emphasize?: boolean }) {
+function StatCard({ label, value, subValue, trend, color }: {
+    label: string;
+    value: string | number;
+    subValue?: string;
+    trend?: string;
+    color?: string;
+}) {
     return (
         <Box
             sx={{
-                p: 1.2,
-                borderRadius: 14,
-                border: "1px solid rgba(37,243,225,0.12)",
-                background: "rgba(14, 18, 24, 0.45)",
+                p: 1,
+                borderRadius: 1,
+                background: "rgba(14, 18, 24, 0.5)",
+                border: "1px solid rgba(37,243,225,0.15)",
                 minWidth: 0,
-                overflow: "hidden",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "center",
-                alignItems: "center",
                 textAlign: "center",
+                overflow: "hidden",
             }}
         >
             <Typography
-                variant="caption"
-                color="text.secondary"
                 sx={{
-                    fontSize: 12,
-                    display: "block",
-                    width: "100%",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    textAlign: "center",
+                    color: "rgba(255,255,255,0.6)",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                    mb: 0.25,
                 }}
-                noWrap
             >
                 {label}
             </Typography>
-            <Typography
-                variant="body2"
-                sx={{
-                    fontWeight: 950,
-                    mt: 0.25,
-                    fontSize: emphasize ? 16 : 14,
-                    lineHeight: 1.15,
-                    width: "100%",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    textAlign: "center",
-                    wordBreak: "break-word",
-                    display: "-webkit-box",
-                    WebkitBoxOrient: "vertical",
-                    WebkitLineClamp: emphasize ? 1 : 2,
-                }}
-            >
-                {value}
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 0.5 }}>
+                <Typography
+                    sx={{
+                        fontSize: 16,
+                        fontWeight: 900,
+                        color: color || "rgba(255,255,255,0.95)",
+                        lineHeight: 1,
+                    }}
+                >
+                    {value}
+                </Typography>
+                {subValue && (
+                    <Typography sx={{ fontSize: 10, color: "rgba(255,255,255,0.5)", fontWeight: 700 }}>
+                        {subValue}
+                    </Typography>
+                )}
+                {trend && trend !== "stable" && (
+                    <Typography sx={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "rgba(37,243,225,0.8)",
+                        ml: 0.25,
+                    }}>
+                        {trend}
+                    </Typography>
+                )}
+            </Box>
         </Box>
     );
 }
 
 export function MonitoringPanel({
-                                    pollMs = 5000,
-                                    startCollapsed = false,
-                                    topNRoutes = 6,
-                                    topNStatuses = 4,
-                                    showSparklines = true,
-                                    showUpdatedChip = true,
-                                    onMetrics,
-                                    onError,
-                                }: PanelProps) {
+    pollMs = 5000,
+    startCollapsed = false,
+    onMetrics,
+    onError,
+}: PanelProps) {
     const [m, setM] = useState<Metrics | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [collapsed, setCollapsed] = useState(startCollapsed);
     const [paused, setPaused] = useState(false);
-
-    const [latHover, setLatHover] = useState<number | null>(null);
-    const [rpsHover, setRpsHover] = useState<number | null>(null);
-    const [loopHover, setLoopHover] = useState<number | null>(null);
 
     const refresh = useCallback(async () => {
         try {
@@ -360,16 +246,12 @@ export function MonitoringPanel({
     useEffect(() => {
         let alive = true;
         let id: number | null = null;
-
         const tick = async () => {
-            if (!alive) return;
-            if (paused) return;
+            if (!alive || paused) return;
             await refresh();
         };
-
         tick();
         id = window.setInterval(tick, pollMs);
-
         return () => {
             alive = false;
             if (id) window.clearInterval(id);
@@ -377,233 +259,208 @@ export function MonitoringPanel({
     }, [pollMs, paused, refresh]);
 
     const health = useMemo(() => {
-        if (!m) return { label: "unknown", color: "default" as const };
-        return m.errors1m > 0 || m.owErrors1m > 0 ? { label: "degraded", color: "warning" as const } : { label: "ok", color: "success" as const };
+        if (!m) return { label: "Unknown", color: "default" as const, dotColor: "#888" };
+        if (m.errors1m > 0 || m.owErrors1m > 0) return { label: "Degraded", color: "warning" as const, dotColor: "#f59e0b" };
+        return { label: "Healthy", color: "success" as const, dotColor: "#22c55e" };
     }, [m]);
 
-    const updatedLabel = useMemo(() => {
-        if (!m) return "Updated —";
-        return `Updated ${formatAgo(m.updatedAt)}`;
-    }, [m]);
-
-    const trendLatency = useMemo(() => (m ? trendLabel(m.latencySeries ?? []) : "flat"), [m]);
-    const trendRps = useMemo(() => (m ? trendLabel(m.rpsSeries ?? []) : "flat"), [m]);
-    const trendLoop = useMemo(() => (m ? trendLabel(m.eventLoopLagSeries ?? []) : "flat"), [m]);
-
-    const topStatuses = useMemo(() => (m ? topN(m.statusCounts, topNStatuses) : []), [m, topNStatuses]);
-    const topOwStatuses = useMemo(() => (m ? topN(m.openWeatherStatusCounts, topNStatuses) : []), [m, topNStatuses]);
-
-    const chipSx = {
-        maxWidth: 180,
-        "& .MuiChip-label": {
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontWeight: 900,
-            textAlign: "center",
-        },
-    };
+    const trendLatency = useMemo(() => (m ? trendLabel(m.latencySeries ?? []) : "stable"), [m]);
+    const trendRps = useMemo(() => (m ? trendLabel(m.rpsSeries ?? []) : "stable"), [m]);
 
     if (!m && !error) {
         return (
-            <Typography variant="body2" color="text.secondary">
-                Loading…
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "center", py: 4 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
+                    Connecting to server...
+                </Typography>
+            </Box>
         );
     }
 
     return (
-        <Stack spacing={1.6} sx={{ minWidth: 0 }}>
-            <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center" useFlexGap sx={{ minWidth: 0 }}>
-                <Chip size="small" label={health.label} color={health.color} variant="outlined" sx={chipSx} />
-                {m && (
-                    <>
-                        <Chip size="small" label={`hit1m ${(m.cacheHitRate1m * 100).toFixed(0)}%`} color="primary" variant="outlined" sx={chipSx} />
-                        <Chip size="small" label={`rps ${m.rps1m}`} variant="outlined" sx={chipSx} />
-                        <Chip size="small" label={`p95 ${m.p95LatencyMs}ms`} variant="outlined" sx={chipSx} />
-                        <Chip size="small" label={`loop p95 ${m.eventLoopLagP95Ms}ms`} variant="outlined" sx={chipSx} />
-                    </>
-                )}
-                {m && showUpdatedChip && <Chip size="small" label={updatedLabel} color="primary" variant="outlined" sx={{ ...chipSx, maxWidth: 260 }} />}
+        <Stack spacing={1} sx={{ minWidth: 0, pb: 1 }}>
+            {/* Header with status and controls */}
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                    {/* Health indicator */}
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                        <Box
+                            sx={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: "50%",
+                                backgroundColor: health.dotColor,
+                                boxShadow: `0 0 8px ${health.dotColor}`,
+                                animation: "pulse 2s infinite",
+                                "@keyframes pulse": {
+                                    "0%, 100%": { opacity: 1 },
+                                    "50%": { opacity: 0.5 },
+                                },
+                            }}
+                        />
+                        <Typography sx={{ fontSize: 14, fontWeight: 700, color: health.dotColor }}>
+                            {health.label}
+                        </Typography>
+                    </Box>
 
-                <Box sx={{ flex: 1 }} />
+                    {m && (
+                        <Chip
+                            size="small"
+                            label={`${formatUptime(m.uptimeSec)}`}
+                            sx={{
+                                height: 24,
+                                fontSize: 12,
+                                fontWeight: 700,
+                                background: "rgba(37,243,225,0.1)",
+                                border: "1px solid rgba(37,243,225,0.2)",
+                                borderRadius: 1,
+                            }}
+                        />
+                    )}
+                </Box>
 
-                <Button size="small" variant="outlined" color="primary" onClick={refresh} sx={{ height: 30, px: 1.2, whiteSpace: "nowrap" }}>
-                    Refresh
-                </Button>
-
-                <Button
-                    size="small"
-                    variant="outlined"
-                    color={paused ? "warning" : "primary"}
-                    onClick={() => setPaused((x) => !x)}
-                    sx={{ height: 30, px: 1.2, whiteSpace: "nowrap" }}
-                >
-                    {paused ? "Resume" : "Pause"}
-                </Button>
-
-                <Button size="small" variant="outlined" color="primary" onClick={() => setCollapsed((x) => !x)} sx={{ height: 30, px: 1.2, whiteSpace: "nowrap" }}>
-                    {collapsed ? "Expand" : "Collapse"}
-                </Button>
-            </Stack>
+                {/* Control buttons */}
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                    <Tooltip title="Refresh">
+                        <IconButton size="small" onClick={refresh} sx={{ color: "rgba(37,243,225,0.8)" }}>
+                            <RefreshIcon fontSize="small" />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title={paused ? "Resume" : "Pause"}>
+                        <IconButton
+                            size="small"
+                            onClick={() => setPaused((x) => !x)}
+                            sx={{ color: paused ? "#f59e0b" : "rgba(37,243,225,0.8)" }}
+                        >
+                            {paused ? <PlayArrowIcon fontSize="small" /> : <PauseIcon fontSize="small" />}
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title={collapsed ? "Expand" : "Collapse"}>
+                        <IconButton
+                            size="small"
+                            onClick={() => setCollapsed((x) => !x)}
+                            sx={{ color: "rgba(37,243,225,0.8)" }}
+                        >
+                            {collapsed ? <ExpandMoreIcon fontSize="small" /> : <ExpandLessIcon fontSize="small" />}
+                        </IconButton>
+                    </Tooltip>
+                </Box>
+            </Box>
 
             {error && (
                 <Box
                     sx={{
-                        p: 1.1,
-                        borderRadius: 14,
-                        border: "1px solid rgba(255, 80, 80, 0.22)",
-                        background: "rgba(60, 14, 14, 0.35)",
+                        p: 1,
+                        borderRadius: 1,
+                        background: "rgba(239,68,68,0.1)",
+                        border: "1px solid rgba(239,68,68,0.3)",
                     }}
                 >
-                    <Typography variant="body2" sx={{ fontWeight: 900 }}>
+                    <Typography sx={{ fontSize: 13, fontWeight: 600, color: "#f87171" }}>
                         {error}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                        Metrics are unavailable. Try refresh.
                     </Typography>
                 </Box>
             )}
 
-            <Collapse in={!!m && !collapsed} timeout={180} unmountOnExit>
+            <Collapse in={!!m && !collapsed} timeout={200}>
                 {m && (
-                    <Stack spacing={1.6} sx={{ minWidth: 0 }}>
+                    <Stack spacing={1}>
+                        {/* Key metrics grid */}
                         <Box
                             sx={{
                                 display: "grid",
-                                gap: 1.2,
-                                gridTemplateColumns: {
-                                    xs: "repeat(2, minmax(0, 1fr))",
-                                    sm: "repeat(3, minmax(0, 1fr))",
-                                    md: "repeat(4, minmax(0, 1fr))",
-                                },
-                                minWidth: 0,
+                                gap: 1,
+                                gridTemplateColumns: "repeat(4, 1fr)",
                             }}
                         >
-                            <StatCell label="Uptime" value={formatUptime(m.uptimeSec)} emphasize />
-                            <StatCell label="Node" value={m.node} />
-                            <StatCell label="Req (1m)" value={m.req1m} />
-                            <StatCell label="Errors (1m)" value={m.errors1m} />
-
-                            <StatCell label="Latency last/avg" value={`${m.lastLatencyMs}/${m.avgLatencyMs} ms`} />
-                            <StatCell label="Latency p50/p95" value={`${m.p50LatencyMs}/${m.p95LatencyMs} ms`} />
-                            <StatCell label="OW calls/errors" value={`${m.openWeatherCalls}/${m.openWeatherErrors}`} />
-                            <StatCell label="OW errors (1m)" value={m.owErrors1m} />
-
-                            <StatCell label="Cache size" value={m.cacheSize} />
-                            <StatCell label="Cache hit1m" value={`${m.cacheHits1m}/${m.cacheMisses1m}`} />
-                            <StatCell label="Memory RSS" value={`${m.memoryMB.rss} MB`} />
-                            <StatCell label="Heap used/total" value={`${m.memoryMB.heapUsed}/${m.memoryMB.heapTotal} MB`} />
+                            <StatCard label="RPS" value={m.rps1m.toFixed(2)} trend={trendRps} />
+                            <StatCard label="P95 Latency" value={m.p95LatencyMs} subValue="ms" trend={trendLatency} />
+                            <StatCard
+                                label="Cache Hit"
+                                value={`${(m.cacheHitRate1m * 100).toFixed(0)}%`}
+                                color={m.cacheHitRate1m > 0.5 ? "rgba(37,243,225,0.95)" : "rgba(255,255,255,0.7)"}
+                            />
+                            <StatCard label="Errors" value={m.errors1m} color={m.errors1m > 0 ? "#ff6b6b" : "rgba(37,243,225,0.95)"} />
                         </Box>
 
-                        {showSparklines && (
-                            <>
-                                <Divider />
-
-                                <Box
-                                    sx={{
-                                        display: "grid",
-                                        gap: 2,
-                                        gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                                        minWidth: 0,
-                                    }}
-                                >
-                                    <Box sx={{ minWidth: 0 }}>
-                                        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12, fontWeight: 900 }}>
-                                                Latency trend {trendLatency}
-                                            </Typography>
-                                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12, fontWeight: 900 }}>
-                                                {latHover == null ? "" : `${Math.round(latHover)} ms`}
-                                            </Typography>
-                                        </Stack>
-                                        <Sparkline values={m.latencySeries ?? []} onHover={(v) => setLatHover(v)} formatValue={(v) => `${Math.round(v)} ms`} />
-                                    </Box>
-
-                                    <Box sx={{ minWidth: 0 }}>
-                                        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12, fontWeight: 900 }}>
-                                                RPS trend {trendRps}
-                                            </Typography>
-                                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12, fontWeight: 900 }}>
-                                                {rpsHover == null ? "" : `${rpsHover.toFixed(2)}`}
-                                            </Typography>
-                                        </Stack>
-                                        <Sparkline values={m.rpsSeries ?? []} onHover={(v) => setRpsHover(v)} formatValue={(v) => v.toFixed(2)} />
-                                    </Box>
-
-                                    <Box sx={{ minWidth: 0 }}>
-                                        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12, fontWeight: 900 }}>
-                                                Event loop lag trend {trendLoop}
-                                            </Typography>
-                                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12, fontWeight: 900 }}>
-                                                {loopHover == null ? "" : `${Math.round(loopHover)} ms`}
-                                            </Typography>
-                                        </Stack>
-                                        <Sparkline values={m.eventLoopLagSeries ?? []} onHover={(v) => setLoopHover(v)} formatValue={(v) => `${Math.round(v)} ms`} />
-                                    </Box>
-                                </Box>
-                            </>
-                        )}
-
-                        <Divider />
-
+                        {/* Sparklines */}
                         <Box
                             sx={{
                                 display: "grid",
-                                gap: 1.6,
-                                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                                minWidth: 0,
+                                gap: 1,
+                                gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
                             }}
                         >
-                            <Box sx={{ minWidth: 0 }}>
-                                <Typography variant="subtitle2" fontWeight={950}>
-                                    Top routes
+                            <Box
+                                sx={{
+                                    p: 1,
+                                    borderRadius: 1,
+                                    background: "rgba(14,18,24,0.5)",
+                                    border: "1px solid rgba(37,243,225,0.1)",
+                                    textAlign: "center",
+                                    minWidth: 0,
+                                    position: "relative",
+                                    zIndex: 1,
+                                    "&:hover": { zIndex: 10 },
+                                }}
+                            >
+                                <Typography sx={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.6)", mb: 0.5, textTransform: "uppercase" }}>
+                                    Latency Trend
                                 </Typography>
-                                <Stack spacing={0.7} sx={{ mt: 0.8 }}>
-                                    {(m.topRoutes ?? []).slice(0, topNRoutes).map((r) => (
-                                        <Box key={r.route} display="flex" justifyContent="space-between" gap={2} sx={{ minWidth: 0 }}>
-                                            <Typography
-                                                variant="body2"
-                                                sx={{
-                                                    opacity: 0.92,
-                                                    minWidth: 0,
-                                                    flex: 1,
-                                                    overflow: "hidden",
-                                                    textOverflow: "ellipsis",
-                                                    whiteSpace: "nowrap",
-                                                }}
-                                            >
-                                                {r.route}
-                                            </Typography>
-                                            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 900, whiteSpace: "nowrap" }}>
-                                                {r.count}
-                                            </Typography>
-                                        </Box>
-                                    ))}
-                                </Stack>
+                                <MiniSparkline values={m.latencySeries ?? []} />
                             </Box>
-
-                            <Box sx={{ minWidth: 0 }}>
-                                <Typography variant="subtitle2" fontWeight={950}>
-                                    Status codes
+                            <Box
+                                sx={{
+                                    p: 1,
+                                    borderRadius: 1,
+                                    background: "rgba(14,18,24,0.5)",
+                                    border: "1px solid rgba(37,243,225,0.1)",
+                                    textAlign: "center",
+                                    minWidth: 0,
+                                    position: "relative",
+                                    zIndex: 1,
+                                    "&:hover": { zIndex: 10 },
+                                }}
+                            >
+                                <Typography sx={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.6)", mb: 0.5, textTransform: "uppercase" }}>
+                                    RPS Trend
                                 </Typography>
-                                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 0.8 }} useFlexGap>
-                                    {topStatuses.map((x) => (
-                                        <Chip key={x.k} size="small" label={`${x.k}: ${x.v}`} variant="outlined" sx={{ maxWidth: 160 }} />
-                                    ))}
-                                </Stack>
-
-                                <Typography variant="subtitle2" fontWeight={950} sx={{ mt: 1.6 }}>
-                                    OpenWeather status
-                                </Typography>
-                                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 0.8 }} useFlexGap>
-                                    {topOwStatuses.map((x) => (
-                                        <Chip key={x.k} size="small" label={`${x.k}: ${x.v}`} variant="outlined" sx={{ maxWidth: 160 }} />
-                                    ))}
-                                </Stack>
+                                <MiniSparkline values={m.rpsSeries ?? []} color="rgba(74,222,128,0.9)" />
                             </Box>
+                        </Box>
+
+                        {/* Additional stats */}
+                        <Box
+                            sx={{
+                                display: "grid",
+                                gap: 1,
+                                gridTemplateColumns: "repeat(4, 1fr)",
+                            }}
+                        >
+                            {[
+                                { label: "Requests", value: m.requestsTotal },
+                                { label: "Cache Size", value: m.cacheSize },
+                                { label: "OW Calls", value: m.openWeatherCalls },
+                                { label: "Memory", value: `${m.memoryMB.heapUsed}MB` },
+                            ].map((item) => (
+                                <Box
+                                    key={item.label}
+                                    sx={{
+                                        p: 1,
+                                        borderRadius: 1,
+                                        background: "rgba(14,18,24,0.5)",
+                                        border: "1px solid rgba(37,243,225,0.1)",
+                                        textAlign: "center",
+                                    }}
+                                >
+                                    <Typography sx={{ fontSize: 10, color: "rgba(255,255,255,0.6)", fontWeight: 700, textTransform: "uppercase", mb: 0.25 }}>
+                                        {item.label}
+                                    </Typography>
+                                    <Typography sx={{ fontSize: 14, fontWeight: 900, color: "rgba(255,255,255,0.95)" }}>
+                                        {item.value}
+                                    </Typography>
+                                </Box>
+                            ))}
                         </Box>
                     </Stack>
                 )}

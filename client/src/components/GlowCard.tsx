@@ -52,7 +52,7 @@ export const GlowCard = styled(Paper, {
         padding: pad,
         borderRadius: rad,
         position: "relative",
-        overflow: "hidden",
+        overflow: "visible",
         border: `1px solid ${baseBorder}`,
         boxShadow: baseShadow,
         outline: 0,

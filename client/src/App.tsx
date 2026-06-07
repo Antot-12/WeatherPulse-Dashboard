@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MutableRefObject } from "react";
+import type { MutableRefObject, ReactNode } from "react";
 import Container from "@mui/material/Container";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
@@ -13,9 +13,6 @@ import Chip from "@mui/material/Chip";
 import Button from "@mui/material/Button";
 import Box from "@mui/material/Box";
 import Divider from "@mui/material/Divider";
-import List from "@mui/material/List";
-import ListItem from "@mui/material/ListItem";
-import ListItemText from "@mui/material/ListItemText";
 import Switch from "@mui/material/Switch";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Collapse from "@mui/material/Collapse";
@@ -24,17 +21,24 @@ import LocationCityIcon from "@mui/icons-material/LocationCity";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import PushPinIcon from "@mui/icons-material/PushPin";
+import BookmarksIcon from "@mui/icons-material/Bookmarks";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
-import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import MyLocationIcon from "@mui/icons-material/MyLocation";
 import NotificationsActiveIcon from "@mui/icons-material/NotificationsActive";
 import NotificationsOffIcon from "@mui/icons-material/NotificationsOff";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { useTheme, keyframes } from "@mui/material/styles";
+import Tabs from "@mui/material/Tabs";
+import Tab from "@mui/material/Tab";
 
 import type { Layout } from "react-grid-layout";
-import { geocode, getCurrent, getForecast, createAbortableRequest } from "./api";
+import { WeatherIcon } from "./components/WeatherIcon";
+import { EmptyState, ChartPlaceholder } from "./components/EmptyStates";
+import { WeatherSkeleton, ChartSkeleton } from "./components/Skeletons";
+import { getTempColor, getTempGradient, getTempDescription, getWindColor } from "./utils/weatherColors";
+import { geocode, getCurrent, getForecast, getBatchWeather, createAbortableRequest } from "./api";
 import type { ForecastPoint, GeoItem } from "./types";
 import { debounce } from "./utils/debounce";
 import { GlowCard } from "./components/GlowCard";
@@ -42,9 +46,12 @@ import { TempLineChart } from "./components/TempLineChart";
 import { HumidityChart } from "./components/HumidityChart";
 import { WindChart } from "./components/WindChart";
 import { MonitoringPanel } from "./components/MonitoringPanel";
+import { ServerStatsPanel } from "./components/ServerStatsPanel";
 import { GridDashboard } from "./components/GridDashboard";
 import type { RGLLayouts } from "./components/GridDashboard";
 import { WidgetCard } from "./components/WidgetCard";
+import { TabbedWidgetCard } from "./components/TabbedWidgetCard";
+import { CombinedChartWidget } from "./components/CombinedChartWidget";
 import { loadLayouts, loadSelectedCity, saveLayouts, saveSelectedCity } from "./storage";
 
 type Breakpoint = "xl" | "lg" | "md" | "sm" | "xs";
@@ -60,7 +67,14 @@ type CurrentWeather = {
   clouds?: { all?: number };
   visibility?: number;
   sys?: { sunrise?: number; sunset?: number };
+  weather?: Array<{ id?: number; main?: string; description?: string; icon?: string }>;
 };
+
+// Keyframes for animations
+const pulseRefresh = keyframes`
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(37, 243, 225, 0.4); }
+  50% { opacity: 0.8; box-shadow: 0 0 0 8px rgba(37, 243, 225, 0); }
+`;
 
 type ForecastResponse = {
   list: Array<{
@@ -91,7 +105,11 @@ type AlertItem = { id: string; ts: number; city: string; message: string; severi
 const ALERT_RULES_KEY = "weatherpulse:alertRules:v1";
 const ALERTS_KEY = "weatherpulse:alerts:v1";
 
-const WIDGET_IDS = ["overview", "forecast", "humidity", "wind", "pins", "monitoring"] as const;
+const WIDGET_IDS = ["overview", "forecast", "humidity", "wind", "pins", "monitoring", "serverstats"] as const;
+
+// Chart types that can be combined
+const CHART_WIDGETS = ["forecast", "humidity", "wind"] as const;
+type ChartType = typeof CHART_WIDGETS[number];
 
 function loadPins(): Pinned[] {
   try {
@@ -160,13 +178,14 @@ function fmtClock(sec?: number) {
   return `${hh}:${mm}`;
 }
 
-function fmtShortTime(d: Date) {
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mo = String(d.getMonth() + 1).padStart(2, "0");
-  return `${dd}.${mo} ${hh}:${mm}`;
-}
+// fmtShortTime - kept for potential use in forecast details
+// function fmtShortTime(d: Date) {
+//   const hh = String(d.getHours()).padStart(2, "0");
+//   const mm = String(d.getMinutes()).padStart(2, "0");
+//   const dd = String(d.getDate()).padStart(2, "0");
+//   const mo = String(d.getMonth() + 1).padStart(2, "0");
+//   return `${dd}.${mo} ${hh}:${mm}`;
+// }
 
 function safeNum(x: unknown) {
   const n = typeof x === "number" ? x : Number(x);
@@ -222,44 +241,49 @@ function loadAlerts(): AlertItem[] {
 
 const DEFAULT_LAYOUTS: RGLLayouts = {
   xl: [
-    { i: "overview", x: 0, y: 0, w: 5, h: 13 },
-    { i: "forecast", x: 5, y: 0, w: 4, h: 10 },
-    { i: "monitoring", x: 9, y: 0, w: 3, h: 14 },
-    { i: "pins", x: 0, y: 13, w: 5, h: 11 },
-    { i: "humidity", x: 0, y: 24, w: 9, h: 10 },
-    { i: "wind", x: 9, y: 14, w: 3, h: 8 },
+    { i: "overview", x: 0, y: 0, w: 4, h: 14 },
+    { i: "monitoring", x: 4, y: 0, w: 4, h: 8 },
+    { i: "humidity", x: 8, y: 0, w: 4, h: 12 },
+    { i: "wind", x: 4, y: 8, w: 8, h: 10 },
+    { i: "pins", x: 0, y: 14, w: 4, h: 9 },
+    { i: "serverstats", x: 0, y: 23, w: 6, h: 12 },
+    { i: "forecast", x: 6, y: 18, w: 6, h: 10 },
   ],
   lg: [
-    { i: "overview", x: 0, y: 0, w: 5, h: 12 },
-    { i: "forecast", x: 5, y: 0, w: 4, h: 10 },
-    { i: "monitoring", x: 9, y: 0, w: 3, h: 14 },
-    { i: "pins", x: 0, y: 13, w: 5, h: 11 },
-    { i: "humidity", x: 0, y: 24, w: 9, h: 10 },
-    { i: "wind", x: 9, y: 14, w: 3, h: 8 },
+    { i: "overview", x: 0, y: 0, w: 4, h: 14 },
+    { i: "monitoring", x: 4, y: 0, w: 4, h: 8 },
+    { i: "humidity", x: 8, y: 0, w: 4, h: 12 },
+    { i: "wind", x: 4, y: 8, w: 8, h: 10 },
+    { i: "pins", x: 0, y: 14, w: 4, h: 9 },
+    { i: "serverstats", x: 0, y: 23, w: 6, h: 12 },
+    { i: "forecast", x: 6, y: 18, w: 6, h: 10 },
   ],
   md: [
-    { i: "overview", x: 0, y: 0, w: 7, h: 15 },
-    { i: "forecast", x: 7, y: 0, w: 5, h: 10 },
-    { i: "pins", x: 0, y: 15, w: 7, h: 12 },
-    { i: "wind", x: 7, y: 10, w: 5, h: 9 },
-    { i: "humidity", x: 0, y: 27, w: 12, h: 10 },
-    { i: "monitoring", x: 0, y: 37, w: 12, h: 13 },
+    { i: "overview", x: 0, y: 0, w: 6, h: 12 },
+    { i: "monitoring", x: 6, y: 0, w: 6, h: 8 },
+    { i: "humidity", x: 0, y: 12, w: 6, h: 10 },
+    { i: "wind", x: 6, y: 8, w: 6, h: 10 },
+    { i: "pins", x: 0, y: 22, w: 6, h: 9 },
+    { i: "serverstats", x: 0, y: 31, w: 6, h: 12 },
+    { i: "forecast", x: 6, y: 18, w: 6, h: 10 },
   ],
   sm: [
-    { i: "overview", x: 0, y: 0, w: 6, h: 18 },
-    { i: "forecast", x: 0, y: 18, w: 6, h: 11 },
-    { i: "pins", x: 0, y: 29, w: 6, h: 16 },
-    { i: "wind", x: 0, y: 45, w: 6, h: 10 },
-    { i: "humidity", x: 0, y: 55, w: 6, h: 11 },
-    { i: "monitoring", x: 0, y: 66, w: 6, h: 16 },
+    { i: "overview", x: 0, y: 0, w: 6, h: 10 },
+    { i: "monitoring", x: 0, y: 10, w: 6, h: 8 },
+    { i: "humidity", x: 0, y: 18, w: 6, h: 10 },
+    { i: "wind", x: 0, y: 28, w: 6, h: 10 },
+    { i: "pins", x: 0, y: 38, w: 6, h: 9 },
+    { i: "serverstats", x: 0, y: 47, w: 6, h: 12 },
+    { i: "forecast", x: 0, y: 59, w: 6, h: 10 },
   ],
   xs: [
-    { i: "overview", x: 0, y: 0, w: 1, h: 22 },
-    { i: "forecast", x: 0, y: 22, w: 1, h: 12 },
-    { i: "pins", x: 0, y: 34, w: 1, h: 18 },
-    { i: "wind", x: 0, y: 52, w: 1, h: 12 },
-    { i: "humidity", x: 0, y: 64, w: 1, h: 12 },
-    { i: "monitoring", x: 0, y: 76, w: 1, h: 18 },
+    { i: "overview", x: 0, y: 0, w: 1, h: 10 },
+    { i: "monitoring", x: 0, y: 10, w: 1, h: 8 },
+    { i: "humidity", x: 0, y: 18, w: 1, h: 10 },
+    { i: "wind", x: 0, y: 28, w: 1, h: 10 },
+    { i: "pins", x: 0, y: 38, w: 1, h: 10 },
+    { i: "serverstats", x: 0, y: 48, w: 1, h: 12 },
+    { i: "forecast", x: 0, y: 60, w: 1, h: 10 },
   ],
 };
 
@@ -268,6 +292,8 @@ function asMap(arr: Layout) {
   for (const x of arr) m.set(x.i, x);
   return m;
 }
+
+const ALL_RESIZE_HANDLES: ("s" | "w" | "e" | "n" | "sw" | "nw" | "se" | "ne")[] = ['s', 'w', 'e', 'n', 'sw', 'nw', 'se', 'ne'];
 
 function ensureLayouts(current: RGLLayouts | null, defaults: RGLLayouts, ids: string[]): RGLLayouts {
   const bps: Breakpoint[] = ["xl", "lg", "md", "sm", "xs"];
@@ -283,11 +309,11 @@ function ensureLayouts(current: RGLLayouts | null, defaults: RGLLayouts, ids: st
     const next: LayoutItem[] = [];
     for (const id of ids) {
       const existing = baseMap.get(id);
-      if (existing) next.push({ ...existing });
+      if (existing) next.push({ ...existing, resizeHandles: ALL_RESIZE_HANDLES });
       else {
         const d = defMap.get(id);
-        if (d) next.push({ ...d });
-        else next.push({ i: id, x: 0, y: 9999, w: 4, h: 8 });
+        if (d) next.push({ ...d, resizeHandles: ALL_RESIZE_HANDLES });
+        else next.push({ i: id, x: 0, y: 9999, w: 4, h: 8, resizeHandles: ALL_RESIZE_HANDLES });
       }
     }
     out[bp] = next;
@@ -297,6 +323,13 @@ function ensureLayouts(current: RGLLayouts | null, defaults: RGLLayouts, ids: st
 }
 
 export default function App() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  // const isTablet = useMediaQuery(theme.breakpoints.down("md"));
+
+  const [mobileTab, setMobileTab] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   const widgetIds = useMemo(() => [...WIDGET_IDS], []);
   const [q, setQ] = useState("Kyiv");
   const [options, setOptions] = useState<GeoItem[]>([]);
@@ -314,6 +347,20 @@ export default function App() {
 
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+
+  // Combined widgets state: { "monitoring": ["monitoring", "serverstats"] } means monitoring widget shows both as tabs
+  const COMBINED_KEY = "weatherpulse:combined:v1";
+  const [combinedWidgets, setCombinedWidgets] = useState<Record<string, string[]>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(COMBINED_KEY) ?? "{}") as Record<string, string[]>;
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem(COMBINED_KEY, JSON.stringify(combinedWidgets));
+  }, [combinedWidgets]);
 
   const [layouts, setLayouts] = useState<RGLLayouts>(() =>
       ensureLayouts(loadLayouts() as RGLLayouts | null, DEFAULT_LAYOUTS, widgetIds)
@@ -440,6 +487,11 @@ export default function App() {
         setSelected(item);
         saveSelectedCity(item);
 
+        // Set refreshing state for animation
+        if (silent) {
+          setIsRefreshing(true);
+        }
+
         if (!silent) {
           setLoading(true);
           setError(null);
@@ -483,6 +535,7 @@ export default function App() {
           }
         } finally {
           if (!silent) setLoading(false);
+          setIsRefreshing(false);
           inFlightKeyRef.current = null;
         }
       },
@@ -688,18 +741,19 @@ export default function App() {
       [defaultPin, pins, setInfoSafe]
   );
 
-  const movePin = useCallback(
-      (index: number, dir: -1 | 1) => {
-        const next = [...pins];
-        const to = index + dir;
-        if (to < 0 || to >= next.length) return;
-        const tmp = next[index];
-        next[index] = next[to];
-        next[to] = tmp;
-        setPins(next);
-      },
-      [pins]
-  );
+  // movePin - kept for potential future drag-to-reorder feature
+  // const movePin = useCallback(
+  //     (index: number, dir: -1 | 1) => {
+  //       const next = [...pins];
+  //       const to = index + dir;
+  //       if (to < 0 || to >= next.length) return;
+  //       const tmp = next[index];
+  //       next[index] = next[to];
+  //       next[to] = tmp;
+  //       setPins(next);
+  //     },
+  //     [pins]
+  // );
 
   const clearPins = useCallback(() => {
     setPins([]);
@@ -709,8 +763,98 @@ export default function App() {
 
   const resetLayouts = useCallback(() => {
     setLayouts(ensureLayouts(DEFAULT_LAYOUTS, DEFAULT_LAYOUTS, widgetIds));
+    setCombinedWidgets({});
     setInfoSafe("Layout reset");
   }, [widgetIds, setInfoSafe]);
+
+  // Combine two widgets into tabs
+  const combineWidgets = useCallback((targetId: string, sourceId: string) => {
+    if (targetId === sourceId) return;
+
+    setCombinedWidgets((prev) => {
+      const newCombined = { ...prev };
+
+      // Get existing tabs for target, or create new array with just target
+      const targetTabs = newCombined[targetId] || [targetId];
+
+      // Get source tabs (if source was already a combined widget)
+      const sourceTabs = newCombined[sourceId] || [sourceId];
+
+      // Merge tabs
+      const merged = [...new Set([...targetTabs, ...sourceTabs])];
+      newCombined[targetId] = merged;
+
+      // Remove source from combined (it's now part of target)
+      delete newCombined[sourceId];
+
+      return newCombined;
+    });
+
+    // Increase layout height for the combined widget
+    setLayouts((prev) => {
+      const bps: Breakpoint[] = ["xl", "lg", "md", "sm", "xs"];
+      const out: RGLLayouts = {};
+
+      for (const bp of bps) {
+        const layout = (prev[bp] ?? []) as Layout;
+        out[bp] = layout.map((item) => {
+          if (item.i === targetId) {
+            // Get source widget height to add
+            const sourceItem = layout.find((l) => l.i === sourceId);
+            const addHeight = sourceItem ? Math.max(6, Math.floor(sourceItem.h * 0.7)) : 8;
+            return { ...item, h: item.h + addHeight };
+          }
+          return item;
+        });
+      }
+
+      return out;
+    });
+
+    setInfoSafe(`Combined widgets`);
+  }, [setInfoSafe]);
+
+  // Split a widget out of a combined group
+  const splitWidget = useCallback((groupId: string, widgetId: string) => {
+    setCombinedWidgets((prev) => {
+      const newCombined = { ...prev };
+      const tabs = newCombined[groupId];
+
+      if (!tabs || tabs.length <= 1) return prev;
+
+      // Remove widget from group
+      newCombined[groupId] = tabs.filter((id) => id !== widgetId);
+
+      // If only one left, remove the group
+      if (newCombined[groupId].length === 1) {
+        delete newCombined[groupId];
+      }
+
+      return newCombined;
+    });
+
+    // Reduce layout height for the combined widget
+    setLayouts((prev) => {
+      const bps: Breakpoint[] = ["xl", "lg", "md", "sm", "xs"];
+      const out: RGLLayouts = {};
+
+      for (const bp of bps) {
+        const layout = (prev[bp] ?? []) as Layout;
+        out[bp] = layout.map((item) => {
+          if (item.i === groupId) {
+            // Reduce height but keep minimum
+            const newH = Math.max(8, item.h - 6);
+            return { ...item, h: newH };
+          }
+          return item;
+        });
+      }
+
+      return out;
+    });
+
+    setInfoSafe(`Split widget`);
+  }, [setInfoSafe]);
 
   const refreshPinPreview = useCallback(
       async (p: Pinned) => {
@@ -739,13 +883,55 @@ export default function App() {
       [pinPreviews]
   );
 
+  // Batch refresh all pinned cities at once
+  const refreshAllPinPreviews = useCallback(async () => {
+    if (!pins.length) return;
+
+    const pinsToRefresh = pins.slice(0, 12).filter((p) => {
+      const k = pinKey(p);
+      const prev = pinPreviews[k];
+      return !prev || Date.now() - prev.updatedAt >= 2 * 60_000;
+    });
+
+    if (!pinsToRefresh.length) return;
+
+    try {
+      const locations = pinsToRefresh.map((p) => ({ lat: p.lat, lon: p.lon }));
+      const response = await getBatchWeather(locations, { timeoutMs: 15000 });
+
+      const updates: Record<string, PinPreview> = {};
+      for (const result of response.data) {
+        const pin = pinsToRefresh.find(
+          (p) => Math.abs(p.lat - result.lat) < 0.001 && Math.abs(p.lon - result.lon) < 0.001
+        );
+        if (!pin) continue;
+
+        const k = pinKey(pin);
+        if (result.error) {
+          updates[k] = { ok: false, temp: null, wind: null, updatedAt: Date.now(), message: result.error };
+        } else if (result.data) {
+          const temp = safeNum(result.data.main?.temp);
+          const wind = safeNum(result.data.wind?.speed);
+          updates[k] = { ok: true, temp, wind, updatedAt: Date.now() };
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        setPinPreviews((m) => ({ ...m, ...updates }));
+      }
+    } catch {
+      // Fallback to individual requests
+      await Promise.all(pinsToRefresh.map((p) => refreshPinPreview(p)));
+    }
+  }, [pins, pinPreviews, refreshPinPreview]);
+
   useEffect(() => {
     if (!pins.length) return;
     const id = window.setTimeout(() => {
-      void Promise.all(pins.slice(0, 12).map((p) => refreshPinPreview(p)));
+      void refreshAllPinPreviews();
     }, 0);
     return () => window.clearTimeout(id);
-  }, [pins, refreshPinPreview]);
+  }, [pins, refreshAllPinPreviews]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -776,7 +962,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [loadWeather, loading, pinCurrent, selected]);
 
-  const rangeChips = (
+  const rangeChips = useMemo(() => (
       <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ minWidth: 0, justifyContent: "center" }}>
         {[24, 48, 72, 120].map((h) => (
             <Chip
@@ -806,7 +992,7 @@ export default function App() {
             />
         ))}
       </Stack>
-  );
+  ), [rangeHours, step]);
 
   const health = useMemo(() => {
     if (error) return { label: "red", color: "error" as const };
@@ -817,7 +1003,7 @@ export default function App() {
   const sunrise = current?.sys?.sunrise;
   const sunset = current?.sys?.sunset;
 
-  const ellipsisChipSx = {
+  const ellipsisChipSx = useMemo(() => ({
     maxWidth: "100%",
     minWidth: 0,
     "& .MuiChip-label": {
@@ -826,414 +1012,453 @@ export default function App() {
       whiteSpace: "nowrap",
       minWidth: 0,
     },
-  } as const;
+  } as const), []);
 
-  const widgets: Record<string, React.ReactNode> = {
+  // Get combine options for a widget (all other widgets)
+  const getCombineOptions = useCallback((currentId: string) => {
+    const widgetLabels: Record<string, string> = {
+      overview: "🏠 Overview",
+      forecast: "🌡️ Temperature",
+      humidity: "💧 Humidity",
+      wind: "💨 Wind",
+      pins: "📌 Pinned Cities",
+      monitoring: "📊 Monitoring",
+      serverstats: "🖥️ Server Stats",
+    };
+    return widgetIds
+      .filter((id) => id !== currentId)
+      .map((id) => ({ id, label: widgetLabels[id] || id }));
+  }, [widgetIds]);
+
+  const widgets: Record<string, React.ReactNode> = useMemo(() => ({
     overview: (
         <WidgetCard
             title="Overview"
-            right={
-              <Chip
-                  size="small"
-                  label={title}
-                  variant="outlined"
-                  color="primary"
-                  sx={{
-                    ...ellipsisChipSx,
-                    maxWidth: { xs: 200, sm: 280, md: 360, lg: 420 },
-                  }}
-              />
-            }
+            combineOptions={getCombineOptions("overview")}
+            onCombine={(targetId) => combineWidgets("overview", targetId)}
             bodySx={{
-              overflow: "hidden",
+              overflow: "auto",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               textAlign: "center",
+              pr: 1.5,
             }}
         >
-          <Stack spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: "center" }}>
-            <Stack
-                direction="row"
-                gap={1}
-                flexWrap="wrap"
-                useFlexGap
-                alignItems="center"
-                justifyContent="center"
-                sx={{ width: "100%", minWidth: 0 }}
-            >
-              <Chip size="small" label={`Status ${health.label}`} color={health.color} variant="outlined" sx={ellipsisChipSx} />
-              <Chip size="small" label="R refresh" variant="outlined" sx={ellipsisChipSx} />
-              <Chip size="small" label="P pin" variant="outlined" sx={ellipsisChipSx} />
-              <Chip size="small" label="/ search" variant="outlined" sx={ellipsisChipSx} />
-              <Chip
-                  size="small"
-                  label={`Backoff x${autoBackoffRef.current.toFixed(1)}`}
-                  variant="outlined"
-                  color={autoBackoffRef.current > 1.2 ? "warning" : "default"}
-                  sx={ellipsisChipSx}
-              />
-            </Stack>
+          {/* Loading State */}
+          {loading && !current && (
+            <WeatherSkeleton />
+          )}
 
-            <Stack
-                direction={{ xs: "column", md: "row" }}
-                spacing={1}
-                alignItems="stretch"
-                justifyContent="center"
-                useFlexGap
-                sx={{ width: "100%", minWidth: 0 }}
-            >
-              <Box
-                  sx={{
-                    flex: 1,
-                    minWidth: 0,
-                    border: "1px solid rgba(37,243,225,0.10)",
-                    borderRadius: 2,
-                    p: 1,
-                    background: "rgba(14, 18, 24, 0.40)",
-                    overflow: "hidden",
-                  }}
-              >
-                <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 0.9 }}>
-                  Now
-                </Typography>
+          {/* Empty State - No city selected */}
+          {!loading && !current && !selected && (
+            <EmptyState
+              type="no-city"
+              suggestions={["Kyiv", "London", "Tokyo", "New York"]}
+            />
+          )}
 
-                <Stack direction="row" spacing={1.2} alignItems="baseline" justifyContent="center" useFlexGap flexWrap="wrap">
-                  <Typography variant="h3" sx={{ fontWeight: 950, lineHeight: 1.05 }}>
-                    {!loading && current ? `${current.main.temp.toFixed(1)}°C` : "—"}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 850 }}>
-                    {selected ? `${selected.lat.toFixed(2)}, ${selected.lon.toFixed(2)}` : "—"}
-                  </Typography>
-                </Stack>
-
-                <Stack direction="row" flexWrap="wrap" justifyContent="center" gap={1} useFlexGap sx={{ mt: 1 }}>
-                  {!loading && current ? (
-                      <>
-                        <Chip size="small" label={`Humidity ${current.main.humidity}%`} variant="outlined" sx={ellipsisChipSx} />
-                        <Chip size="small" label={`Wind ${current.wind.speed.toFixed(1)} m/s`} variant="outlined" sx={ellipsisChipSx} />
-                        {current.main.feels_like != null ? (
-                            <Chip size="small" label={`Feels ${Number(current.main.feels_like).toFixed(1)}°C`} variant="outlined" sx={ellipsisChipSx} />
-                        ) : null}
-                        {current.main.pressure != null ? (
-                            <Chip size="small" label={`Pressure ${Number(current.main.pressure)} hPa`} variant="outlined" sx={ellipsisChipSx} />
-                        ) : null}
-                        {current.visibility != null ? (
-                            <Chip size="small" label={`Visibility ${(Number(current.visibility) / 1000).toFixed(1)} km`} variant="outlined" sx={ellipsisChipSx} />
-                        ) : null}
-                        {current.clouds?.all != null ? (
-                            <Chip size="small" label={`Clouds ${Number(current.clouds.all)}%`} variant="outlined" sx={ellipsisChipSx} />
-                        ) : null}
-                        {current.wind.gust != null ? (
-                            <Chip size="small" label={`Gusts ${Number(current.wind.gust).toFixed(1)} m/s`} variant="outlined" sx={ellipsisChipSx} />
-                        ) : null}
-                      </>
-                  ) : (
-                      <Typography variant="body2" color="text.secondary">
-                        {loading ? "Loading…" : "Choose a city above"}
-                      </Typography>
-                  )}
-                </Stack>
-
-                <Stack direction="row" flexWrap="wrap" justifyContent="center" gap={1} useFlexGap sx={{ mt: 1 }}>
-                  <Chip
-                      size="small"
-                      label={`Updated: ${formatUpdated(lastLoadedAt)}`}
-                      color="primary"
-                      variant="outlined"
-                      sx={{ ...ellipsisChipSx, maxWidth: 260 }}
-                  />
-                  <Chip
-                      size="small"
-                      label={`Sunrise ${fmtClock(sunrise)} · Sunset ${fmtClock(sunset)} · Day ${dayLengthLabel(sunrise, sunset)}`}
-                      variant="outlined"
-                      sx={{ ...ellipsisChipSx, maxWidth: "100%" }}
-                  />
-                </Stack>
-              </Box>
-
-              <Box
-                  sx={{
-                    flex: 1,
-                    minWidth: 0,
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    borderRadius: 2,
-                    p: 1,
-                    background: "rgba(10,14,22,0.45)",
-                    overflow: "hidden",
-                  }}
-              >
-                <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 0.9 }}>
-                  Next 24h
-                </Typography>
-
-                {!next24Stats ? (
-                    <Typography variant="body2" color="text.secondary">
-                      —
-                    </Typography>
-                ) : (
-                    <>
-                      <Stack direction="row" flexWrap="wrap" justifyContent="center" gap={1} useFlexGap sx={{ mt: 0.8 }}>
-                        <Chip
-                            size="small"
-                            label={
-                              next24Stats.minT != null && next24Stats.maxT != null
-                                  ? `Temp ${next24Stats.minT.toFixed(1)}…${next24Stats.maxT.toFixed(1)}°C`
-                                  : "Temp —"
-                            }
-                            variant="outlined"
-                            color="primary"
-                            sx={ellipsisChipSx}
-                        />
-                        <Chip
-                            size="small"
-                            label={next24Stats.avgH != null ? `Avg hum ${Math.round(next24Stats.avgH)}%` : "Avg hum —"}
-                            variant="outlined"
-                            sx={ellipsisChipSx}
-                        />
-                        <Chip
-                            size="small"
-                            label={next24Stats.maxW != null ? `Max wind ${next24Stats.maxW.toFixed(1)} m/s` : "Max wind —"}
-                            variant="outlined"
-                            sx={ellipsisChipSx}
-                        />
-                        <Chip
-                            size="small"
-                            label={
-                              next24Stats.trend == null
-                                  ? "Trend —"
-                                  : next24Stats.trend > 0.25
-                                      ? `Trend ↑ ${next24Stats.trend.toFixed(1)}°C`
-                                      : next24Stats.trend < -0.25
-                                          ? `Trend ↓ ${Math.abs(next24Stats.trend).toFixed(1)}°C`
-                                          : "Trend ~0°C"
-                            }
-                            variant="outlined"
-                            color={next24Stats.trend != null && Math.abs(next24Stats.trend) > 2 ? "warning" : "default"}
-                            sx={ellipsisChipSx}
-                        />
-                      </Stack>
-
-                      <Stack direction="row" flexWrap="wrap" justifyContent="center" gap={1} useFlexGap sx={{ mt: 1 }}>
-                        <Chip
-                            size="small"
-                            label={next24Stats.minT != null ? `Min @ ${fmtShortTime(next24Stats.minAt)}` : "Min @ —"}
-                            variant="outlined"
-                            sx={ellipsisChipSx}
-                        />
-                        <Chip
-                            size="small"
-                            label={next24Stats.maxT != null ? `Max @ ${fmtShortTime(next24Stats.maxAt)}` : "Max @ —"}
-                            variant="outlined"
-                            sx={ellipsisChipSx}
-                        />
-                      </Stack>
-                    </>
-                )}
-
-                <Divider sx={{ opacity: 0.5, mt: 1, mb: 1 }} />
-
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems="center" justifyContent="center" useFlexGap>
-                  <FormControlLabel
-                      control={<Switch checked={autoRefresh} onChange={(_, v) => setAutoRefresh(v)} />}
-                      label={<Typography variant="body2">Auto refresh</Typography>}
-                  />
-                  <Stack direction="row" spacing={0.75} alignItems="center" justifyContent="center" useFlexGap sx={{ minWidth: 0 }}>
-                    {[2, 5, 10, 15].map((m) => (
-                        <Chip
-                            key={m}
-                            size="small"
-                            label={`${m}m`}
-                            color={autoRefreshMin === m ? "primary" : "default"}
-                            variant="outlined"
-                            onClick={() => setAutoRefreshMin(m)}
-                            sx={{ cursor: "pointer", ...ellipsisChipSx }}
-                            disabled={!autoRefresh}
-                        />
-                    ))}
-                  </Stack>
-                </Stack>
-              </Box>
-            </Stack>
-
-            <Divider sx={{ opacity: 0.5, width: "100%" }} />
-
-            <Stack spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: "center" }}>
-              <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" useFlexGap flexWrap="wrap" sx={{ width: "100%" }}>
-                <Typography variant="subtitle2" fontWeight={950}>
-                  Alert rules
-                </Typography>
-                <Button size="small" variant="outlined" onClick={() => setAlertsOpen((x) => !x)}>
-                  {alertsOpen ? "Hide alerts" : "Show alerts"}
-                </Button>
+          {/* Main Weather Display */}
+          {current && (
+            <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0, alignItems: "center" }}>
+              {/* City & Update Info */}
+              <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="center" useFlexGap>
+                <Chip
+                    size="small"
+                    label={title}
+                    variant="outlined"
+                    color="primary"
+                    sx={{
+                      ...ellipsisChipSx,
+                      maxWidth: { xs: 200, sm: 280, md: 360 },
+                      borderRadius: 1,
+                    }}
+                />
+                <Chip
+                    size="small"
+                    label={`Updated: ${formatUpdated(lastLoadedAt)}`}
+                    color="primary"
+                    variant="outlined"
+                    sx={{
+                      ...ellipsisChipSx,
+                      maxWidth: 140,
+                      borderRadius: 1,
+                      animation: isRefreshing ? `${pulseRefresh} 1s ease-in-out infinite` : "none",
+                    }}
+                />
               </Stack>
 
+              {/* Hero Section: Icon + Temperature */}
               <Box
-                  sx={{
-                    width: "100%",
-                    minWidth: 0,
-                    display: "grid",
-                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                    gap: 1,
-                  }}
+                sx={{
+                  width: "100%",
+                  py: { xs: 1.5, md: 2 },
+                  px: 2,
+                  borderRadius: 1,
+                  background: getTempGradient(current.main.temp),
+                  border: `1px solid ${getTempColor(current.main.temp)}20`,
+                }}
               >
-                {alertRules.map((r) => {
-                  const label = r.kind === "wind_gt" ? "Wind >" : "Temp <";
-                  const unit = r.kind === "wind_gt" ? "m/s" : "°C";
-                  const notifyIcon =
-                      typeof Notification === "undefined" ? (
-                          <NotificationsOffIcon fontSize="small" />
-                      ) : r.notify ? (
-                          <NotificationsActiveIcon fontSize="small" />
-                      ) : (
-                          <NotificationsOffIcon fontSize="small" />
-                      );
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={2}
+                  alignItems="center"
+                  justifyContent="center"
+                >
+                  {/* Weather Icon */}
+                  <WeatherIcon
+                    code={current.weather?.[0]?.icon}
+                    size={isMobile ? 64 : 80}
+                    animated={!loading}
+                  />
 
-                  return (
-                      <Box
-                          key={r.id}
-                          sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            gap: 1,
-                            flexWrap: "wrap",
-                            border: "1px solid rgba(37,243,225,0.12)",
-                            borderRadius: 14,
-                            p: 0.8,
-                            background: "rgba(14, 18, 24, 0.45)",
-                            overflow: "hidden",
-                          }}
-                      >
-                        <Chip
-                            size="small"
-                            label={`${label} ${r.value} ${unit}`}
-                            color={r.enabled ? "primary" : "default"}
-                            variant="outlined"
-                            onClick={() =>
-                                setAlertRules((prev) => prev.map((x) => (x.id === r.id ? { ...x, enabled: !x.enabled } : x)))
-                            }
-                            sx={{ cursor: "pointer", ...ellipsisChipSx, maxWidth: "100%" }}
-                        />
-                        <TextField
-                            size="small"
-                            value={String(r.value)}
-                            onChange={(e) => {
-                              const n = Number(e.target.value);
-                              if (!Number.isFinite(n)) return;
-                              setAlertRules((prev) => prev.map((x) => (x.id === r.id ? { ...x, value: n } : x)));
-                            }}
-                            inputProps={{ inputMode: "decimal", style: { textAlign: "center" } }}
-                            sx={{ width: 96 }}
-                            disabled={!r.enabled}
-                        />
-                        <Tooltip
-                            title={
-                              typeof Notification === "undefined" ? "Notifications unsupported" : r.notify ? "Notifications on" : "Notifications off"
-                            }
-                        >
-                      <span>
-                        <IconButton
-                            size="small"
-                            color={r.notify ? "primary" : "default"}
-                            disabled={!r.enabled || typeof Notification === "undefined"}
-                            onClick={() =>
-                                setAlertRules((prev) => prev.map((x) => (x.id === r.id ? { ...x, notify: !x.notify } : x)))
-                            }
-                        >
-                          {notifyIcon}
-                        </IconButton>
-                      </span>
-                        </Tooltip>
-                        <Chip size="small" label={r.enabled ? "enabled" : "disabled"} variant="outlined" sx={ellipsisChipSx} />
-                      </Box>
-                  );
-                })}
+                  {/* Temperature + Description */}
+                  <Stack alignItems={{ xs: "center", sm: "flex-start" }} spacing={0.5}>
+                    <Typography
+                      variant="h2"
+                      sx={{
+                        fontWeight: 950,
+                        lineHeight: 1,
+                        fontSize: { xs: "2.5rem", sm: "3rem", md: "3.5rem" },
+                        color: getTempColor(current.main.temp),
+                        textShadow: `0 0 20px ${getTempColor(current.main.temp)}40`,
+                      }}
+                    >
+                      {current.main.temp.toFixed(1)}°C
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" fontWeight={700}>
+                      {current.weather?.[0]?.description
+                        ? current.weather[0].description.charAt(0).toUpperCase() + current.weather[0].description.slice(1)
+                        : getTempDescription(current.main.temp)}
+                    </Typography>
+                    {current.main.feels_like != null && (
+                      <Typography variant="caption" color="text.secondary">
+                        Feels like {Number(current.main.feels_like).toFixed(1)}°C
+                      </Typography>
+                    )}
+                  </Stack>
+                </Stack>
               </Box>
 
-              <Collapse in={alertsOpen} timeout={180} unmountOnExit>
-                <Box sx={{ mt: 1, width: "100%" }}>
-                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" useFlexGap flexWrap="wrap">
-                    <Chip
-                        size="small"
-                        label={`Alerts ${alerts.length}`}
-                        variant="outlined"
-                        color={alerts.length ? "warning" : "default"}
-                        sx={ellipsisChipSx}
-                    />
-                    <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={() => {
-                          setAlerts([]);
-                          setInfoSafe("Alerts cleared");
-                        }}
-                        disabled={!alerts.length}
-                    >
-                      Clear
-                    </Button>
-                  </Stack>
+              {/* Quick Stats Grid */}
+              <Box
+                sx={{
+                  width: "100%",
+                  display: "grid",
+                  gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(4, 1fr)" },
+                  gap: 1.5,
+                }}
+              >
+                <Box sx={{ p: 1.5, borderRadius: 1, border: "1px solid rgba(37,243,225,0.1)", background: "rgba(14,18,24,0.5)", textAlign: "center" }}>
+                  <Typography variant="caption" color="text.secondary" display="block">💧 Humidity</Typography>
+                  <Typography variant="body2" fontWeight={900}>{current.main.humidity}%</Typography>
+                </Box>
+                <Box sx={{ p: 1.5, borderRadius: 1, border: `1px solid ${getWindColor(current.wind.speed)}20`, background: "rgba(14,18,24,0.5)", textAlign: "center" }}>
+                  <Typography variant="caption" color="text.secondary" display="block">💨 Wind</Typography>
+                  <Typography variant="body2" fontWeight={900} sx={{ color: getWindColor(current.wind.speed) }}>
+                    {current.wind.speed.toFixed(1)} m/s
+                  </Typography>
+                </Box>
+                {current.main.pressure != null && (
+                  <Box sx={{ p: 1.5, borderRadius: 1, border: "1px solid rgba(37,243,225,0.1)", background: "rgba(14,18,24,0.5)", textAlign: "center" }}>
+                    <Typography variant="caption" color="text.secondary" display="block">🌡️ Pressure</Typography>
+                    <Typography variant="body2" fontWeight={900}>{current.main.pressure} hPa</Typography>
+                  </Box>
+                )}
+                {current.visibility != null && (
+                  <Box sx={{ p: 1.5, borderRadius: 1, border: "1px solid rgba(37,243,225,0.1)", background: "rgba(14,18,24,0.5)", textAlign: "center" }}>
+                    <Typography variant="caption" color="text.secondary" display="block">👁️ Visibility</Typography>
+                    <Typography variant="body2" fontWeight={900}>{(current.visibility / 1000).toFixed(1)} km</Typography>
+                  </Box>
+                )}
+              </Box>
 
-                  <Stack spacing={0.75} sx={{ mt: 1, alignItems: "center" }}>
-                    {alerts.slice(0, 12).map((a) => (
-                        <Box
-                            key={a.id}
-                            sx={{
-                              width: "100%",
-                              border: "1px solid rgba(255,255,255,0.08)",
-                              borderRadius: 14,
-                              p: 1,
-                              background: "rgba(10,14,22,0.55)",
-                              overflow: "hidden",
-                            }}
-                        >
-                          <Typography variant="body2" sx={{ fontWeight: 900, wordBreak: "break-word" }}>
-                            {a.city} · {a.severity.toUpperCase()}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-word" }}>
-                            {a.message}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {formatUpdated(a.ts)}
-                          </Typography>
-                        </Box>
+              {/* Sun Times */}
+              <Stack direction="row" spacing={2} justifyContent="center" flexWrap="wrap" useFlexGap>
+                <Chip
+                  size="small"
+                  label={`🌅 ${fmtClock(sunrise)}`}
+                  variant="outlined"
+                  sx={ellipsisChipSx}
+                />
+                <Chip
+                  size="small"
+                  label={`🌇 ${fmtClock(sunset)}`}
+                  variant="outlined"
+                  sx={ellipsisChipSx}
+                />
+                <Chip
+                  size="small"
+                  label={`☀️ ${dayLengthLabel(sunrise, sunset)}`}
+                  variant="outlined"
+                  sx={ellipsisChipSx}
+                />
+              </Stack>
+
+              <Divider sx={{ opacity: 0.3, width: "100%" }} />
+
+              {/* 24h Forecast Summary */}
+              <Box
+                sx={{
+                  width: "100%",
+                  p: 1.5,
+                  borderRadius: 1,
+                  border: "1px solid rgba(37,243,225,0.1)",
+                  background: "rgba(14,18,24,0.5)",
+                }}
+              >
+                <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 1 }}>
+                  Next 24 hours
+                </Typography>
+                {!next24Stats ? (
+                  <Typography variant="body2" color="text.secondary">Loading forecast...</Typography>
+                ) : (
+                  <Stack direction="row" flexWrap="wrap" justifyContent="center" gap={1} useFlexGap sx={{ mt: 0.5 }}>
+                    <Chip
+                      size="small"
+                      label={`${next24Stats.minT?.toFixed(0)}° — ${next24Stats.maxT?.toFixed(0)}°`}
+                      color="primary"
+                      variant="outlined"
+                      sx={ellipsisChipSx}
+                    />
+                    <Chip
+                      size="small"
+                      label={`💧 ${Math.round(next24Stats.avgH ?? 0)}%`}
+                      variant="outlined"
+                      sx={ellipsisChipSx}
+                    />
+                    <Chip
+                      size="small"
+                      label={`💨 max ${next24Stats.maxW?.toFixed(1)} m/s`}
+                      variant="outlined"
+                      sx={ellipsisChipSx}
+                    />
+                    <Chip
+                      size="small"
+                      label={
+                        next24Stats.trend == null
+                          ? "→ stable"
+                          : next24Stats.trend > 0.5
+                            ? `↑ +${next24Stats.trend.toFixed(1)}°`
+                            : next24Stats.trend < -0.5
+                              ? `↓ ${next24Stats.trend.toFixed(1)}°`
+                              : "→ stable"
+                      }
+                      color={Math.abs(next24Stats.trend ?? 0) > 3 ? "warning" : "default"}
+                      variant="outlined"
+                      sx={ellipsisChipSx}
+                    />
+                  </Stack>
+                )}
+              </Box>
+
+              {/* Auto Refresh & Alerts - Collapsible on mobile */}
+              <Box sx={{ width: "100%" }}>
+                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                  <FormControlLabel
+                    control={<Switch size="small" checked={autoRefresh} onChange={(_, v) => setAutoRefresh(v)} />}
+                    label={<Typography variant="body2">Auto refresh</Typography>}
+                  />
+                  <Stack direction="row" spacing={0.5}>
+                    {[5, 10, 15].map((m) => (
+                      <Chip
+                        key={m}
+                        size="small"
+                        label={`${m}m`}
+                        color={autoRefreshMin === m ? "primary" : "default"}
+                        variant="outlined"
+                        onClick={() => setAutoRefreshMin(m)}
+                        sx={{ cursor: "pointer", opacity: autoRefresh ? 1 : 0.5 }}
+                        disabled={!autoRefresh}
+                      />
                     ))}
                   </Stack>
-                </Box>
-              </Collapse>
+                </Stack>
+
+                {/* Alerts section */}
+                <Collapse in={!isMobile || alertsOpen} timeout={200}>
+                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" sx={{ mb: 1 }}>
+                    <Typography variant="subtitle2" fontWeight={900}>⚡ Alert Rules</Typography>
+                    {isMobile && (
+                      <Button size="small" variant="text" onClick={() => setAlertsOpen(!alertsOpen)}>
+                        {alertsOpen ? "Hide" : "Show"}
+                      </Button>
+                    )}
+                  </Stack>
+                  <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5 }}>
+                    {alertRules.map((r) => (
+                      <Box
+                        key={r.id}
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 0.5,
+                          p: 1,
+                          borderRadius: 1,
+                          border: "1px solid rgba(37,243,225,0.1)",
+                          background: "rgba(14,18,24,0.5)",
+                        }}
+                      >
+                        <Chip
+                          size="small"
+                          label={r.kind === "wind_gt" ? "💨 >" : "🌡️ <"}
+                          color={r.enabled ? "primary" : "default"}
+                          variant="outlined"
+                          onClick={() => setAlertRules((prev) => prev.map((x) => (x.id === r.id ? { ...x, enabled: !x.enabled } : x)))}
+                          sx={{ cursor: "pointer" }}
+                        />
+                        <TextField
+                          size="small"
+                          value={String(r.value)}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isFinite(n)) setAlertRules((prev) => prev.map((x) => (x.id === r.id ? { ...x, value: n } : x)));
+                          }}
+                          inputProps={{ style: { textAlign: "center", padding: "4px 8px" } }}
+                          sx={{ width: 60 }}
+                          disabled={!r.enabled}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          {r.kind === "wind_gt" ? "m/s" : "°C"}
+                        </Typography>
+                        <Tooltip title={r.notify ? "Notifications on" : "Notifications off"}>
+                          <IconButton
+                            size="small"
+                            color={r.notify ? "primary" : "default"}
+                            onClick={() => setAlertRules((prev) => prev.map((x) => (x.id === r.id ? { ...x, notify: !x.notify } : x)))}
+                            disabled={!r.enabled}
+                            sx={{ p: 0.5 }}
+                          >
+                            {r.notify ? <NotificationsActiveIcon sx={{ fontSize: 18 }} /> : <NotificationsOffIcon sx={{ fontSize: 18 }} />}
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    ))}
+                  </Box>
+
+                  {/* Alert History */}
+                  {alerts.length > 0 && (
+                    <Box sx={{ mt: 1 }}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                        <Chip size="small" label={`${alerts.length} alerts`} color="warning" variant="outlined" />
+                        <Button size="small" variant="text" onClick={() => { setAlerts([]); setInfoSafe("Alerts cleared"); }}>
+                          Clear
+                        </Button>
+                      </Stack>
+                      <Stack spacing={0.5} sx={{ mt: 0.5, maxHeight: 120, overflow: "auto" }}>
+                        {alerts.slice(0, 5).map((a) => (
+                          <Box
+                            key={a.id}
+                            sx={{
+                              p: 0.75,
+                              borderRadius: 1,
+                              background: a.severity === "crit" ? "rgba(239,68,68,0.15)" : "rgba(251,191,36,0.1)",
+                              border: `1px solid ${a.severity === "crit" ? "rgba(239,68,68,0.3)" : "rgba(251,191,36,0.2)"}`,
+                            }}
+                          >
+                            <Typography variant="caption" fontWeight={700}>{a.city}</Typography>
+                            <Typography variant="caption" color="text.secondary" display="block">{a.message}</Typography>
+                          </Box>
+                        ))}
+                      </Stack>
+                    </Box>
+                  )}
+                </Collapse>
+
+                {/* Show alerts toggle on mobile when collapsed */}
+                {isMobile && !alertsOpen && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    fullWidth
+                    onClick={() => setAlertsOpen(true)}
+                    sx={{ mt: 1 }}
+                  >
+                    ⚡ Show Alert Rules {alerts.length > 0 && `(${alerts.length})`}
+                  </Button>
+                )}
+              </Box>
             </Stack>
-          </Stack>
+          )}
         </WidgetCard>
     ),
 
     forecast: (
-        <WidgetCard title="Forecast" right={rangeChips} bodySx={{ flex: 1 }}>
+        <WidgetCard
+            title="🌡️ Temperature"
+            subtitle="Temperature forecast"
+            combineOptions={getCombineOptions("forecast")}
+            onCombine={(targetId) => combineWidgets("forecast", targetId)}
+            bodySx={{ flex: 1 }}
+        >
+          <Box sx={{ mb: 1 }}>
+            {rangeChips}
+          </Box>
           <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-            <TempLineChart data={filteredForecast} />
+            {loading && !forecastData.length ? (
+              <ChartSkeleton height={200} />
+            ) : forecastData.length < 2 ? (
+              <ChartPlaceholder height={200} />
+            ) : (
+              <TempLineChart data={filteredForecast} />
+            )}
           </Box>
         </WidgetCard>
     ),
 
     humidity: (
-        <WidgetCard title="Humidity" right={rangeChips} bodySx={{ flex: 1 }}>
+        <WidgetCard
+            title="💧 Humidity"
+            subtitle="Humidity forecast"
+            combineOptions={getCombineOptions("humidity")}
+            onCombine={(targetId) => combineWidgets("humidity", targetId)}
+            bodySx={{ flex: 1 }}
+        >
+          <Box sx={{ mb: 1 }}>
+            {rangeChips}
+          </Box>
           <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-            <HumidityChart data={filteredForecast} />
+            {loading && !forecastData.length ? (
+              <ChartSkeleton height={180} />
+            ) : forecastData.length < 2 ? (
+              <ChartPlaceholder height={180} />
+            ) : (
+              <HumidityChart data={filteredForecast} />
+            )}
           </Box>
         </WidgetCard>
     ),
 
     wind: (
-        <WidgetCard title="Wind" right={rangeChips} bodySx={{ flex: 1 }}>
+        <WidgetCard
+            title="💨 Wind Speed"
+            subtitle="Forecast wind conditions"
+            combineOptions={getCombineOptions("wind")}
+            onCombine={(targetId) => combineWidgets("wind", targetId)}
+            bodySx={{ flex: 1 }}
+        >
+          <Box sx={{ mb: 1 }}>
+            {rangeChips}
+          </Box>
           <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-            <WindChart data={filteredForecast} />
+            {loading && !forecastData.length ? (
+              <ChartSkeleton height={180} />
+            ) : forecastData.length < 2 ? (
+              <ChartPlaceholder height={180} />
+            ) : (
+              <WindChart data={filteredForecast} />
+            )}
           </Box>
         </WidgetCard>
     ),
 
     pins: (
         <WidgetCard
-            title="Pinned cities"
+            title="📌 Pinned Cities"
             scroll
+            combineOptions={getCombineOptions("pins")}
+            onCombine={(targetId) => combineWidgets("pins", targetId)}
             right={
               <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
                 <Chip size="small" label={`${pins.length}/12`} variant="outlined" color="primary" sx={ellipsisChipSx} />
@@ -1243,7 +1468,7 @@ export default function App() {
                     color="primary"
                     disabled={pins.length === 0}
                     onClick={clearPins}
-                    sx={{ height: 30, px: 1.2, whiteSpace: "nowrap" }}
+                    sx={{ height: 28, px: 1, whiteSpace: "nowrap", fontSize: 12 }}
                 >
                   Clear
                 </Button>
@@ -1251,190 +1476,282 @@ export default function App() {
             }
         >
           <Stack spacing={1} sx={{ alignItems: "center" }}>
-            <Stack direction="row" spacing={0.75} flexWrap="wrap" justifyContent="center" useFlexGap sx={{ minWidth: 0 }}>
-              {allGroups.map((g) => (
-                  <Chip
-                      key={g}
-                      size="small"
-                      label={g}
-                      color={pinGroup === g ? "primary" : "default"}
-                      variant="outlined"
-                      onClick={() => setPinGroup(g)}
-                      sx={{ cursor: "pointer", ...ellipsisChipSx }}
-                  />
-              ))}
-            </Stack>
-
-            <TextField
-                size="small"
-                value={pinFilter}
-                onChange={(e) => setPinFilter(e.target.value)}
-                placeholder="Filter pinned…"
-                sx={{ width: "100%", maxWidth: 520 }}
-                inputProps={{ style: { textAlign: "center" } }}
-            />
-
+            {/* Empty state */}
             {pins.length === 0 && (
-                <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-                  Натисни 📌, щоб закріпити місто. Тут можна керувати: зробити дефолтним, перемістити, видалити.
-                </Typography>
-            )}
-
-            {pins.length > 0 && filteredPins.length === 0 && (
-                <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
-                  No matches.
-                </Typography>
-            )}
-
-            {filteredPins.length > 0 && (
-                <List dense sx={{ py: 0, width: "100%" }}>
-                  {filteredPins.map((p) => {
-                    const idx = pins.findIndex((x) => x.lat === p.lat && x.lon === p.lon);
-                    const isDefault = !!defaultPin && defaultPin.lat === p.lat && defaultPin.lon === p.lon;
-                    const pk = pinKey(p);
-                    const pv = pinPreviews[pk];
-                    const pvAge = pv ? formatUpdated(pv.updatedAt) : "—";
-
-                    const previewChips = (
-                        <Stack direction="row" spacing={0.75} flexWrap="wrap" justifyContent="center" useFlexGap sx={{ mt: 0.5 }}>
-                          <Chip
-                              size="small"
-                              label={pv?.ok && pv.temp != null ? `T ${pv.temp.toFixed(1)}°C` : "T —"}
-                              variant="outlined"
-                              color={pv?.ok ? "primary" : "default"}
-                              sx={ellipsisChipSx}
-                          />
-                          <Chip
-                              size="small"
-                              label={pv?.ok && pv.wind != null ? `W ${pv.wind.toFixed(1)} m/s` : "W —"}
-                              variant="outlined"
-                              color={pv?.ok ? "primary" : "default"}
-                              sx={ellipsisChipSx}
-                          />
-                          <Chip size="small" label={pv ? pvAge : "preview —"} variant="outlined" sx={ellipsisChipSx} />
-                          {p.group ? <Chip size="small" label={p.group} variant="outlined" sx={ellipsisChipSx} /> : null}
-                        </Stack>
-                    );
-
-                    return (
-                        <ListItem
-                            key={`${p.lat}:${p.lon}`}
-                            disableGutters
-                            sx={{
-                              border: "1px solid rgba(37,243,225,0.12)",
-                              borderRadius: 14,
-                              px: 1,
-                              py: 0.5,
-                              mb: 1,
-                              background: "rgba(14, 18, 24, 0.45)",
-                            }}
-                            secondaryAction={
-                              <Stack direction="row" spacing={0.5} alignItems="center">
-                                <Tooltip title={isDefault ? "Default city" : "Set as default"}>
-                                  <IconButton
-                                      size="small"
-                                      color="primary"
-                                      onClick={() => {
-                                        setDefaultPin(isDefault ? null : p);
-                                        setInfoSafe(isDefault ? "Default removed" : `Default: ${p.name}`);
-                                      }}
-                                  >
-                                    {isDefault ? <StarIcon fontSize="small" /> : <StarBorderIcon fontSize="small" />}
-                                  </IconButton>
-                                </Tooltip>
-
-                                <Tooltip title="Move up">
-                          <span>
-                            <IconButton size="small" color="primary" disabled={idx <= 0} onClick={() => movePin(idx, -1)}>
-                              <ArrowUpwardIcon fontSize="small" />
-                            </IconButton>
-                          </span>
-                                </Tooltip>
-
-                                <Tooltip title="Move down">
-                          <span>
-                            <IconButton
-                                size="small"
-                                color="primary"
-                                disabled={idx < 0 || idx === pins.length - 1}
-                                onClick={() => movePin(idx, 1)}
-                            >
-                              <ArrowDownwardIcon fontSize="small" />
-                            </IconButton>
-                          </span>
-                                </Tooltip>
-
-                                <Tooltip title="Unpin">
-                                  <IconButton size="small" color="primary" onClick={() => unpin(p)}>
-                                    <DeleteOutlineIcon fontSize="small" />
-                                  </IconButton>
-                                </Tooltip>
-                              </Stack>
-                            }
-                        >
-                          <ListItemText
-                              primary={
-                                <Box onClick={() => void loadWeather(pinnedToGeo(p))} sx={{ cursor: "pointer", minWidth: 0, textAlign: "center" }}>
-                                  <Typography fontWeight={900} sx={{ lineHeight: 1.2, wordBreak: "break-word" }}>
-                                    {idx >= 0 ? `${idx + 1}. ` : ""}
-                                    {p.name}
-                                    {p.state ? `, ${p.state}` : ""} · {p.country}
-                                  </Typography>
-                                  <Typography variant="caption" color="text.secondary">
-                                    {p.lat.toFixed(2)}, {p.lon.toFixed(2)}
-                                  </Typography>
-                                  {previewChips}
-                                </Box>
-                              }
-                          />
-                        </ListItem>
-                    );
-                  })}
-                </List>
+              <EmptyState
+                type="no-pins"
+                message="Pin your favorite cities for quick access. Use the 📌 button or press P."
+                suggestions={["Kyiv", "London", "Tokyo"]}
+              />
             )}
 
             {pins.length > 0 && (
-                <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="center" useFlexGap alignItems="center">
-                  <Chip size="small" label="Set group for selected pin:" variant="outlined" sx={{ ...ellipsisChipSx, maxWidth: 240 }} />
-                  {["UA", "EU", "Travel", ""].map((g) => (
-                      <Chip
-                          key={`g:${g || "None"}`}
-                          size="small"
-                          label={g || "none"}
-                          variant="outlined"
-                          onClick={() => {
-                            const s = selected;
-                            if (!s) return;
-                            const next = pins.map((x) => (x.lat === s.lat && x.lon === s.lon ? { ...x, group: g || undefined } : x));
-                            setPins(next);
-                            setInfoSafe(g ? `Group set: ${g}` : "Group cleared");
-                          }}
-                          sx={{ cursor: "pointer", ...ellipsisChipSx }}
-                          disabled={!selected || !pins.some((x) => x.lat === selected.lat && x.lon === selected.lon)}
-                      />
+              <>
+                {/* Group filter */}
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" justifyContent="center" useFlexGap sx={{ minWidth: 0 }}>
+                  {allGroups.map((g) => (
+                    <Chip
+                      key={g}
+                      size="small"
+                      label={g === "all" ? "All" : g}
+                      color={pinGroup === g ? "primary" : "default"}
+                      variant="outlined"
+                      onClick={() => setPinGroup(g)}
+                      sx={{ cursor: "pointer", height: 24, fontSize: 11, borderRadius: 1 }}
+                    />
                   ))}
                 </Stack>
+
+                {/* Search filter */}
+                <TextField
+                  size="small"
+                  value={pinFilter}
+                  onChange={(e) => setPinFilter(e.target.value)}
+                  placeholder="🔍 Filter cities..."
+                  sx={{ width: "100%", maxWidth: 400, "& .MuiOutlinedInput-root": { borderRadius: 1 } }}
+                  inputProps={{ style: { textAlign: "center", padding: "6px 12px" } }}
+                />
+
+                {/* No matches */}
+                {filteredPins.length === 0 && (
+                  <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+                    No cities match your filter
+                  </Typography>
+                )}
+
+                {/* Pinned cities list */}
+                {filteredPins.length > 0 && (
+                  <Box sx={{ width: "100%", display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5 }}>
+                    {filteredPins.map((p) => {
+                      const isDefault = !!defaultPin && defaultPin.lat === p.lat && defaultPin.lon === p.lon;
+                      const pk = pinKey(p);
+                      const pv = pinPreviews[pk];
+                      const isSelected = selected && selected.lat === p.lat && selected.lon === p.lon;
+
+                      return (
+                        <Box
+                          key={`${p.lat}:${p.lon}`}
+                          onClick={() => void loadWeather(pinnedToGeo(p))}
+                          sx={{
+                            p: 1.5,
+                            borderRadius: 1,
+                            border: isSelected
+                              ? "2px solid rgba(37,243,225,0.5)"
+                              : "1px solid rgba(37,243,225,0.12)",
+                            background: isSelected
+                              ? "rgba(37,243,225,0.08)"
+                              : "rgba(14, 18, 24, 0.5)",
+                            cursor: "pointer",
+                            transition: "all 0.2s",
+                            "&:hover": {
+                              background: "rgba(37,243,225,0.12)",
+                              borderColor: "rgba(37,243,225,0.3)",
+                            },
+                          }}
+                        >
+                          <Stack spacing={0.75}>
+                            {/* Top row: City name + actions */}
+                            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                              <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+                                {isDefault && <StarIcon sx={{ fontSize: 14, color: "#FACC15", flexShrink: 0 }} />}
+                                <Typography sx={{ fontSize: 14, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {p.name}
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" spacing={0} sx={{ flexShrink: 0 }}>
+                                <Tooltip title={isDefault ? "Remove default" : "Set as default"}>
+                                  <IconButton
+                                    size="small"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDefaultPin(isDefault ? null : p);
+                                      setInfoSafe(isDefault ? "Default removed" : `Default: ${p.name}`);
+                                    }}
+                                    sx={{ p: 0.5 }}
+                                  >
+                                    {isDefault ? <StarIcon sx={{ fontSize: 16, color: "#FACC15" }} /> : <StarBorderIcon sx={{ fontSize: 16 }} />}
+                                  </IconButton>
+                                </Tooltip>
+                                <Tooltip title="Remove">
+                                  <IconButton
+                                    size="small"
+                                    onClick={(e) => { e.stopPropagation(); unpin(p); }}
+                                    sx={{ p: 0.5 }}
+                                  >
+                                    <DeleteOutlineIcon sx={{ fontSize: 16 }} />
+                                  </IconButton>
+                                </Tooltip>
+                              </Stack>
+                            </Box>
+
+                            {/* Bottom row: Country/group + weather */}
+                            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                              <Typography sx={{ fontSize: 11, color: "rgba(255,255,255,0.5)" }}>
+                                {p.country}{p.group ? ` · ${p.group}` : ""}
+                              </Typography>
+                              {pv?.ok && (
+                                <Stack direction="row" spacing={1} alignItems="baseline">
+                                  <Typography
+                                    sx={{
+                                      fontSize: 16,
+                                      fontWeight: 900,
+                                      color: pv.temp != null ? getTempColor(pv.temp) : "inherit"
+                                    }}
+                                  >
+                                    {pv.temp != null ? `${pv.temp.toFixed(0)}°` : "—"}
+                                  </Typography>
+                                  <Typography sx={{ fontSize: 11, color: "rgba(255,255,255,0.5)" }}>
+                                    {pv.wind != null ? `${pv.wind.toFixed(1)} m/s` : ""}
+                                  </Typography>
+                                </Stack>
+                              )}
+                            </Box>
+                          </Stack>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                )}
+
+                {/* Group assignment (only when a pinned city is selected) */}
+                {selected && pins.some((x) => x.lat === selected.lat && x.lon === selected.lon) && (
+                  <Stack direction="row" spacing={0.5} flexWrap="wrap" justifyContent="center" useFlexGap alignItems="center" sx={{ pt: 1 }}>
+                    <Typography variant="caption" color="text.secondary">Group:</Typography>
+                    {["UA", "EU", "Travel", ""].map((g) => (
+                      <Chip
+                        key={`g:${g || "None"}`}
+                        size="small"
+                        label={g || "none"}
+                        variant="outlined"
+                        onClick={() => {
+                          const s = selected;
+                          if (!s) return;
+                          const next = pins.map((x) => (x.lat === s.lat && x.lon === s.lon ? { ...x, group: g || undefined } : x));
+                          setPins(next);
+                          setInfoSafe(g ? `Group: ${g}` : "Group cleared");
+                        }}
+                        sx={{ cursor: "pointer", height: 22, fontSize: 10, borderRadius: 1 }}
+                      />
+                    ))}
+                  </Stack>
+                )}
+              </>
             )}
           </Stack>
         </WidgetCard>
     ),
 
     monitoring: (
-        <WidgetCard title="Monitoring" scroll>
+        <WidgetCard
+            title="📊 Monitoring"
+            combineOptions={[
+                { id: "serverstats", label: "🖥️ Server Stats" },
+                { id: "forecast", label: "🌡️ Temperature" },
+                { id: "humidity", label: "💧 Humidity" },
+                { id: "wind", label: "💨 Wind" },
+            ]}
+            onCombine={(targetId) => combineWidgets("monitoring", targetId)}
+            cardSx={{ height: "fit-content" }}
+        >
           <MonitoringPanel />
         </WidgetCard>
     ),
-  };
+
+    serverstats: (
+        <WidgetCard
+            title="🖥️ Server Stats"
+            subtitle="Detailed server metrics"
+            combineOptions={[
+                { id: "monitoring", label: "📊 Monitoring" },
+                { id: "forecast", label: "🌡️ Temperature" },
+                { id: "humidity", label: "💧 Humidity" },
+                { id: "wind", label: "💨 Wind" },
+            ]}
+            onCombine={(targetId) => combineWidgets("serverstats", targetId)}
+        >
+          <ServerStatsPanel />
+        </WidgetCard>
+    ),
+  }), [
+    getCombineOptions, combineWidgets, loading, current, selected, title,
+    lastLoadedAt, isRefreshing, isMobile,
+    sunrise, sunset, next24Stats, autoRefresh,
+    autoRefreshMin, alertRules, alerts, alertsOpen, health, setInfoSafe,
+    setAutoRefresh, setAutoRefreshMin, setAlertRules, setAlerts, setAlertsOpen,
+    rangeChips, forecastData, filteredForecast, pins, clearPins, pinGroup,
+    pinFilter, allGroups, filteredPins, defaultPin, pinPreviews, unpin,
+    loadWeather, setPins, setDefaultPin, setPinGroup, setPinFilter,
+    ellipsisChipSx
+  ]);
+
+  // Build final widgets with combined ones
+  const finalWidgets = useMemo(() => {
+    // Widget metadata for combining (inside useMemo to avoid recreation)
+    const widgetMeta: Record<string, { title: string; icon: string; content: ReactNode }> = {
+      overview: { title: "Overview", icon: "🏠", content: widgets.overview },
+      forecast: { title: "Temperature", icon: "🌡️", content: widgets.forecast },
+      humidity: { title: "Humidity", icon: "💧", content: widgets.humidity },
+      wind: { title: "Wind", icon: "💨", content: widgets.wind },
+      pins: { title: "Pinned Cities", icon: "📌", content: widgets.pins },
+      monitoring: { title: "Monitoring", icon: "📊", content: <MonitoringPanel /> },
+      serverstats: { title: "Server Stats", icon: "🖥️", content: <ServerStatsPanel /> },
+    };
+
+    const result: Record<string, ReactNode> = {};
+    const usedInCombine = new Set<string>();
+
+    // Find which widgets are used as secondary in a combine
+    for (const [, combined] of Object.entries(combinedWidgets)) {
+      combined.slice(1).forEach((id) => usedInCombine.add(id));
+    }
+
+    for (const id of widgetIds) {
+      // Skip if this widget is used in another combined widget
+      if (usedInCombine.has(id)) continue;
+
+      // Check if this widget has combined items
+      const combined = combinedWidgets[id];
+      if (combined && combined.length > 1) {
+        // Check if all combined are charts
+        const allCharts = combined.every((cid) => CHART_WIDGETS.includes(cid as ChartType));
+
+        if (allCharts) {
+          // Render as combined chart widget with shared controls
+          result[id] = (
+            <CombinedChartWidget
+              charts={combined as ChartType[]}
+              data={forecastData}
+              loading={loading}
+              onSplit={(chartId) => splitWidget(id, chartId)}
+            />
+          );
+        } else {
+          // Render as stacked widget (for non-charts like monitoring + serverstats)
+          result[id] = (
+            <TabbedWidgetCard
+              tabs={combined.map((cid) => ({
+                id: cid,
+                title: widgetMeta[cid]?.title || cid,
+                icon: widgetMeta[cid]?.icon,
+                content: widgetMeta[cid]?.content,
+              }))}
+              onSplit={(cid) => splitWidget(id, cid)}
+            />
+          );
+        }
+      } else {
+        // Render normal widget
+        result[id] = widgets[id];
+      }
+    }
+
+    return result;
+  }, [widgetIds, combinedWidgets, forecastData, loading, splitWidget, widgets]);
 
   return (
-      <Container maxWidth="xl" sx={{ py: { xs: 2, sm: 3, md: 4 } }}>
+      <Container maxWidth="xl" sx={{ py: { xs: 2, sm: 3, md: 4 }, overflowX: "hidden" }}>
         <Stack spacing={{ xs: 1.5, sm: 2, md: 2.5 }} sx={{ alignItems: "center" }}>
-          <Stack spacing={0.4} sx={{ textAlign: "center" }}>
-            <Typography variant="h4">WeatherPulse</Typography>
-            <Typography color="text.secondary">
-              Dark gray UI · Neon turquoise accents · Responsive dashboard · Drag & drop blocks
-            </Typography>
-          </Stack>
+          <Typography variant="h3" sx={{ fontWeight: 900 }}>WeatherPulse</Typography>
 
           <GlowCard sx={{ p: { xs: 1.5, sm: 2 }, width: "100%" }}>
             <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} alignItems={{ md: "center" }} sx={{ justifyContent: "center" }}>
@@ -1447,6 +1764,7 @@ export default function App() {
                   filterOptions={(x) => x}
                   onChange={(_, value) => value && void loadWeather(value)}
                   getOptionLabel={(o) => `${o.name}${o.state ? `, ${o.state}` : ""}, ${o.country}`}
+                  getOptionKey={(o) => `${o.lat.toFixed(4)}:${o.lon.toFixed(4)}`}
                   isOptionEqualToValue={(a, b) => a.lat === b.lat && a.lon === b.lon}
                   sx={{ flex: 1, minWidth: { xs: "100%", md: 520 } }}
                   ListboxProps={{ style: { maxHeight: 320 } }}
@@ -1515,30 +1833,128 @@ export default function App() {
                 </span>
                 </Tooltip>
 
-                <Chip size="small" label={`Pinned ${pins.length}`} variant="outlined" color="primary" />
+                <Tooltip title={`${pins.length} pinned cities`}>
+                  <IconButton color="primary" sx={{ height: 44, width: 44, position: "relative", display: { xs: "none", sm: "flex" } }}>
+                    <BookmarksIcon />
+                    <Box sx={{
+                      position: "absolute",
+                      top: 2,
+                      right: 2,
+                      minWidth: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      background: "rgba(37,243,225,0.95)",
+                      boxShadow: "0 2px 8px rgba(37,243,225,0.6), 0 0 12px rgba(37,243,225,0.4)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 11,
+                      fontWeight: 900,
+                      color: "#0a0e14",
+                    }}>
+                      {pins.length}
+                    </Box>
+                  </IconButton>
+                </Tooltip>
 
-                <Button onClick={resetLayouts} startIcon={<RestartAltIcon />} variant="outlined" color="primary" sx={{ height: 44, whiteSpace: "nowrap" }}>
-                  Reset layout
+                <Button
+                  onClick={resetLayouts}
+                  startIcon={<RestartAltIcon />}
+                  variant="outlined"
+                  color="primary"
+                  sx={{ height: 44, whiteSpace: "nowrap", display: { xs: "none", md: "flex" } }}
+                >
+                  Reset
                 </Button>
               </Stack>
             </Stack>
           </GlowCard>
 
+          {/* Mobile Tabs Navigation */}
+          {isMobile && (
+            <Box sx={{ width: "100%", borderBottom: 1, borderColor: "divider" }}>
+              <Tabs
+                value={mobileTab}
+                onChange={(_, v) => setMobileTab(v)}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{
+                  minHeight: 40,
+                  "& .MuiTab-root": {
+                    minHeight: 40,
+                    py: 0.5,
+                    fontSize: 12,
+                    fontWeight: 700,
+                  },
+                }}
+              >
+                <Tab label="🌡️ Weather" />
+                <Tab label="📊 Forecast" />
+                <Tab label="📌 Pins" />
+                <Tab label="💨 Wind" />
+                <Tab label="💧 Humidity" />
+                <Tab label="📈 Monitor" />
+              </Tabs>
+            </Box>
+          )}
+
+          {/* Content Area */}
           <Box sx={{ width: "100%" }}>
-            <GridDashboard layouts={layouts} onLayoutsChange={setLayouts} childrenById={widgets} />
+            {/* Mobile: Show only selected tab content */}
+            {isMobile ? (
+              <Box sx={{ minHeight: 400 }}>
+                {mobileTab === 0 && widgets.overview}
+                {mobileTab === 1 && widgets.forecast}
+                {mobileTab === 2 && widgets.pins}
+                {mobileTab === 3 && widgets.wind}
+                {mobileTab === 4 && widgets.humidity}
+                {mobileTab === 5 && widgets.monitoring}
+              </Box>
+            ) : (
+              /* Desktop/Tablet: Grid layout */
+              <GridDashboard layouts={layouts} onLayoutsChange={setLayouts} childrenById={finalWidgets} />
+            )}
           </Box>
 
+          {/* Snackbars */}
           <Snackbar open={!!error} autoHideDuration={3500} onClose={() => setError(null)}>
             <Alert severity="error" variant="filled" onClose={() => setError(null)}>
               {error}
             </Alert>
           </Snackbar>
 
-          <Snackbar open={!!info} autoHideDuration={1800} onClose={() => setInfo(null)}>
+          <Snackbar
+            open={!!info}
+            autoHideDuration={1800}
+            onClose={() => setInfo(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+          >
             <Alert severity="success" variant="filled" onClose={() => setInfo(null)}>
               {info}
             </Alert>
           </Snackbar>
+
+          {/* Auto-refresh indicator */}
+          {isRefreshing && (
+            <Box
+              sx={{
+                position: "fixed",
+                top: 16,
+                right: 16,
+                zIndex: 1000,
+                px: 1.5,
+                py: 0.5,
+                borderRadius: 2,
+                background: "rgba(37,243,225,0.15)",
+                border: "1px solid rgba(37,243,225,0.3)",
+                animation: `${pulseRefresh} 1s ease-in-out infinite`,
+              }}
+            >
+              <Typography variant="caption" sx={{ fontWeight: 700, color: "#25F3E1" }}>
+                Refreshing...
+              </Typography>
+            </Box>
+          )}
         </Stack>
       </Container>
   );

@@ -1,5 +1,5 @@
 import * as d3 from "d3";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ForecastPoint } from "../types";
 
 type Props = {
@@ -40,11 +40,10 @@ function mean(vals: number[]) {
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
-function defaultFormatTick(d: Date) {
-  const hh = String(d.getHours()).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mo = String(d.getMonth() + 1).padStart(2, "0");
-  return `${dd}.${mo} ${hh}:00`;
+function shortFormatTick(d: Date) {
+  const dd = d.getDate();
+  const hh = d.getHours();
+  return `${dd}/${hh}h`;
 }
 
 function defaultFormatWind(v: number) {
@@ -57,17 +56,38 @@ export function WindChart({
                             height = 320,
                             sampleEvery = 2,
                             ticksY = 5,
-                            maxXTicks = 8,
+                            maxXTicks = 5,
                             showTooltip = true,
                             showGrid = true,
                             showGlow = true,
                             showAverageLine = false,
                             showMaxLabel = true,
-                            formatX = defaultFormatTick,
+                            formatX = shortFormatTick,
                             formatY = defaultFormatWind,
                             onHover,
                           }: Props) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const ref = useRef<SVGSVGElement | null>(null);
+  const [size, setSize] = useState({ width: width, height: height });
+
+  // Measure actual container size
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const measure = () => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setSize({ width: Math.floor(rect.width), height: Math.floor(rect.height) });
+      }
+    };
+
+    measure();
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
 
   const sample = useMemo(() => {
     const safe = cleanData(data);
@@ -75,20 +95,21 @@ export function WindChart({
     return safe.filter((_, i) => i % step === 0);
   }, [data, sampleEvery]);
 
+  const actualWidth = size.width;
+  const actualHeight = size.height;
+
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || actualWidth < 50 || actualHeight < 50) return;
 
     const svg = d3.select<SVGSVGElement, unknown>(el);
     svg.selectAll("*").remove();
 
-    const margin = { top: 16, right: 18, bottom: 54, left: 62 };
+    const margin = { top: 16, right: 60, bottom: 36, left: 50 };
 
     svg
-        .attr("viewBox", `0 0 ${width} ${height}`)
-        .attr("preserveAspectRatio", "none")
-        .style("width", "100%")
-        .style("height", "100%")
+        .attr("width", actualWidth)
+        .attr("height", actualHeight)
         .style("display", "block");
 
     if (!sample || sample.length < 2) {
@@ -104,14 +125,14 @@ export function WindChart({
       return;
     }
 
-    const axisColor = "rgba(255,255,255,0.34)";
-    const tickColor = "rgba(255,255,255,0.92)";
-    const gridColor = "rgba(255,255,255,0.07)";
+    const axisColor = "rgba(255,255,255,0.50)";
+    const tickColor = "rgba(255,255,255,1)";
+    const gridColor = "rgba(255,255,255,0.12)";
 
     const x = d3
         .scaleBand<string>()
         .domain(sample.map((d) => String(d.dt)))
-        .range([margin.left, width - margin.right])
+        .range([margin.left, actualWidth - margin.right])
         .padding(0.28);
 
     const yMax = d3.max(sample, (d) => d.wind) ?? 1;
@@ -119,13 +140,13 @@ export function WindChart({
         .scaleLinear()
         .domain([0, Math.max(1, yMax) * 1.25])
         .nice()
-        .range([height - margin.bottom, margin.top]);
+        .range([actualHeight - margin.bottom, margin.top]);
 
     if (showGrid) {
       const yGrid = d3
           .axisLeft(y)
           .ticks(ticksY)
-          .tickSize(-(width - margin.left - margin.right))
+          .tickSize(-(actualWidth - margin.left - margin.right))
           .tickFormat(() => "");
 
       svg
@@ -141,9 +162,10 @@ export function WindChart({
         .attr("transform", `translate(${margin.left},0)`)
         .call(d3.axisLeft(y).ticks(ticksY).tickSizeOuter(0))
         .call((g) => g.selectAll("path,line").attr("stroke", axisColor))
-        .call((g) => g.selectAll("text").attr("fill", tickColor).attr("font-size", 13).attr("font-weight", 900));
+        .call((g) => g.selectAll("text").attr("fill", tickColor).attr("font-size", 11).attr("font-weight", 600));
 
-    const tickEvery = Math.max(1, Math.round(sample.length / Math.max(2, maxXTicks)));
+    // Calculate tick spacing - show only a few labels
+    const tickEvery = Math.max(1, Math.ceil(sample.length / Math.max(1, maxXTicks)));
     const tickValues = sample.filter((_, i) => i % tickEvery === 0).map((d) => String(d.dt));
 
     const byKey = new Map<string, ForecastPoint>();
@@ -156,19 +178,16 @@ export function WindChart({
 
     svg
         .append("g")
-        .attr("transform", `translate(0,${height - margin.bottom})`)
+        .attr("transform", `translate(0,${actualHeight - margin.bottom})`)
         .call(d3.axisBottom(x).tickValues(tickValues).tickFormat(formatTick).tickSizeOuter(0))
         .call((g) => g.selectAll("path,line").attr("stroke", axisColor))
         .call((g) =>
             g
                 .selectAll("text")
                 .attr("fill", tickColor)
-                .attr("font-size", 13)
-                .attr("font-weight", 900)
-                .attr("text-anchor", "end")
-                .attr("transform", "rotate(-18)")
-                .attr("dx", "-0.3em")
-                .attr("dy", "0.7em")
+                .attr("font-size", 11)
+                .attr("font-weight", 600)
+                .attr("text-anchor", "middle")
         );
 
     const bars = svg
@@ -183,7 +202,7 @@ export function WindChart({
         .attr("width", x.bandwidth())
         .attr("height", (d) => y(0) - y(d.wind))
         .attr("rx", 9)
-        .attr("fill", "rgba(37,243,225,0.22)");
+        .attr("fill", "rgba(37,243,225,0.35)");
 
     if (showGlow) {
       svg
@@ -209,7 +228,7 @@ export function WindChart({
       svg
           .append("line")
           .attr("x1", margin.left)
-          .attr("x2", width - margin.right)
+          .attr("x2", actualWidth - margin.right)
           .attr("y1", y(avg))
           .attr("y2", y(avg))
           .attr("stroke", "rgba(255,255,255,0.18)")
@@ -217,7 +236,7 @@ export function WindChart({
 
       svg
           .append("text")
-          .attr("x", width - margin.right)
+          .attr("x", actualWidth - margin.right)
           .attr("y", y(avg) - 8)
           .attr("text-anchor", "end")
           .attr("fill", "rgba(255,255,255,0.72)")
@@ -234,11 +253,11 @@ export function WindChart({
       svg
           .append("text")
           .attr("x", cx)
-          .attr("y", Math.max(margin.top + 10, cy - 10))
+          .attr("y", Math.max(margin.top + 14, cy - 16))
           .attr("text-anchor", "middle")
-          .attr("fill", "rgba(255,255,255,0.86)")
+          .attr("fill", "rgba(255,255,255,1)")
           .attr("font-size", 12)
-          .attr("font-weight", 950)
+          .attr("font-weight", 600)
           .text(`max ${formatY(maxPoint.wind)}`);
     }
 
@@ -246,8 +265,8 @@ export function WindChart({
         .append("rect")
         .attr("x", margin.left)
         .attr("y", margin.top)
-        .attr("width", width - margin.left - margin.right)
-        .attr("height", height - margin.top - margin.bottom)
+        .attr("width", actualWidth - margin.left - margin.right)
+        .attr("height", actualHeight - margin.top - margin.bottom)
         .attr("fill", "transparent")
         .style("cursor", showTooltip ? "crosshair" : "default")
         .style("touch-action", "none");
@@ -276,15 +295,15 @@ export function WindChart({
         .attr("stroke", "rgba(37,243,225,0.20)");
     const ttText = tooltip
         .append("text")
-        .attr("fill", "rgba(255,255,255,0.94)")
-        .attr("font-size", 13)
-        .attr("font-weight", 900);
+        .attr("fill", "rgba(255,255,255,1)")
+        .attr("font-size", 12)
+        .attr("font-weight", 600);
 
     function pick(mx: number) {
       const keys = x.domain();
       if (!keys.length) return null;
 
-      const px = Math.max(margin.left, Math.min(width - margin.right, mx));
+      const px = Math.max(margin.left, Math.min(actualWidth - margin.right, mx));
       let bestIdx = 0;
       let bestDist = Number.POSITIVE_INFINITY;
 
@@ -324,7 +343,7 @@ export function WindChart({
           .attr("x", left - 3)
           .attr("y", margin.top)
           .attr("width", x.bandwidth() + 6)
-          .attr("height", height - margin.top - margin.bottom);
+          .attr("height", actualHeight - margin.top - margin.bottom);
 
       focusDot.attr("cx", cx).attr("cy", cy);
 
@@ -338,11 +357,11 @@ export function WindChart({
       const pad2 = 12;
       ttBg.attr("width", bb.width + pad2 * 2).attr("height", bb.height + pad2 * 2);
 
-      const placeLeft = cx > width - margin.right - (bb.width + pad2 * 2) - 24;
+      const placeLeft = cx > actualWidth - margin.right - (bb.width + pad2 * 2) - 24;
       const tx = placeLeft ? cx - (bb.width + pad2 * 2) - 12 : cx + 12;
       const ty = Math.max(
           margin.top,
-          Math.min(cy - (bb.height + pad2 * 2) / 2, height - margin.bottom - (bb.height + pad2 * 2))
+          Math.min(cy - (bb.height + pad2 * 2) / 2, actualHeight - margin.bottom - (bb.height + pad2 * 2))
       );
 
       tooltip.attr("transform", `translate(${tx},${ty})`);
@@ -378,8 +397,8 @@ export function WindChart({
     }
   }, [
     sample,
-    width,
-    height,
+    actualWidth,
+    actualHeight,
     sampleEvery,
     ticksY,
     maxXTicks,
@@ -393,5 +412,9 @@ export function WindChart({
     onHover,
   ]);
 
-  return <svg ref={ref} style={{ width: "100%", height: "100%", display: "block" }} />;
+  return (
+    <div ref={containerRef} style={{ width: "100%", height: "100%", flex: 1, minHeight: 0 }}>
+      <svg ref={ref} />
+    </div>
+  );
 }

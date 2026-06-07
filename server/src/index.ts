@@ -209,6 +209,19 @@ setInterval(() => {
   pushBounded(eventLoopLagSeries, lag, 240);
 }, 1000);
 
+// Deduplicate geocode results by lat/lon (rounded to 4 decimal places)
+function dedupeGeoResults(data: any[]): any[] {
+  if (!Array.isArray(data)) return data;
+  const seen = new Set<string>();
+  return data.filter((item) => {
+    if (!item || typeof item.lat !== 'number' || typeof item.lon !== 'number') return true;
+    const key = `${item.lat.toFixed(4)}:${item.lon.toFixed(4)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 app.get("/api/geocode", async (req, res) => {
   const routeKey = "GET /api/geocode";
   try {
@@ -232,10 +245,10 @@ app.get("/api/geocode", async (req, res) => {
       if (hit.state === "stale") {
         const url = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(q)}&limit=${limit}&appid=${API_KEY}`;
         void fetchJsonDedupe(`reval:${key}`, url, 9000)
-            .then((data) => setCache(key, data, 10 * 60 * 1000, 20 * 60 * 1000))
+            .then((data) => setCache(key, dedupeGeoResults(data), 10 * 60 * 1000, 20 * 60 * 1000))
             .catch(() => {});
       }
-      return res.json({ source: hit.state, data: hit.data });
+      return res.json({ source: hit.state, data: dedupeGeoResults(hit.data) });
     }
 
     totals.cacheMisses++;
@@ -245,11 +258,12 @@ app.get("/api/geocode", async (req, res) => {
     const url = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(q)}&limit=${limit}&appid=${API_KEY}`;
 
     const data = await fetchJsonDedupe(key, url, 9000);
-    setCache(key, data, 10 * 60 * 1000, 20 * 60 * 1000);
+    const dedupedData = dedupeGeoResults(data);
+    setCache(key, dedupedData, 10 * 60 * 1000, 20 * 60 * 1000);
 
     recordRequest(routeKey, 200);
     res.setHeader("x-cache", "MISS");
-    res.json({ source: "live", data });
+    res.json({ source: "live", data: dedupedData });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Server error";
     recordIncident({ ts: new Date().toISOString(), route: routeKey, kind: "server", message: msg });
@@ -284,7 +298,7 @@ app.get("/api/weather/current", async (req, res) => {
       if (hit.state === "stale") {
         const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
         void fetchJsonDedupe(`reval:${key}`, url, 9000)
-            .then((data) => setCache(key, data, 2 * 60 * 1000, 10 * 60 * 1000))
+            .then((data) => setCache(key, data, 3 * 60 * 1000, 15 * 60 * 1000))
             .catch(() => {});
       }
       return res.json({ source: hit.state, data: hit.data });
@@ -297,7 +311,7 @@ app.get("/api/weather/current", async (req, res) => {
     const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
 
     const data = await fetchJsonDedupe(key, url, 9000);
-    setCache(key, data, 2 * 60 * 1000, 10 * 60 * 1000);
+    setCache(key, data, 3 * 60 * 1000, 15 * 60 * 1000);
 
     recordRequest(routeKey, 200);
     res.setHeader("x-cache", "MISS");
@@ -336,7 +350,7 @@ app.get("/api/weather/forecast", async (req, res) => {
       if (hit.state === "stale") {
         const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
         void fetchJsonDedupe(`reval:${key}`, url, 12_000)
-            .then((data) => setCache(key, data, 5 * 60 * 1000, 20 * 60 * 1000))
+            .then((data) => setCache(key, data, 10 * 60 * 1000, 30 * 60 * 1000))
             .catch(() => {});
       }
       return res.json({ source: hit.state, data: hit.data });
@@ -349,11 +363,65 @@ app.get("/api/weather/forecast", async (req, res) => {
     const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
 
     const data = await fetchJsonDedupe(key, url, 12_000);
-    setCache(key, data, 5 * 60 * 1000, 20 * 60 * 1000);
+    setCache(key, data, 10 * 60 * 1000, 30 * 60 * 1000);
 
     recordRequest(routeKey, 200);
     res.setHeader("x-cache", "MISS");
     res.json({ source: "live", data });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Server error";
+    recordIncident({ ts: new Date().toISOString(), route: routeKey, kind: "server", message: msg });
+    recordRequest(routeKey, 500);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Batch endpoint for multiple locations (pinned cities)
+app.post("/api/weather/batch", async (req, res) => {
+  const routeKey = "POST /api/weather/batch";
+  try {
+    const locations = req.body?.locations;
+    const units = String(req.body?.units ?? "metric");
+
+    if (!Array.isArray(locations) || locations.length === 0) {
+      recordRequest(routeKey, 400);
+      return res.status(400).json({ error: "Invalid locations array" });
+    }
+
+    // Limit to 12 locations max
+    const locs = locations.slice(0, 12).filter(
+      (l: any) => l && typeof l.lat === "number" && typeof l.lon === "number"
+    );
+
+    const results = await Promise.all(
+      locs.map(async (loc: { lat: number; lon: number }) => {
+        const key = `current:${loc.lat}:${loc.lon}:${units}`;
+        const hit = getFromCache(key);
+
+        if (hit) {
+          totals.cacheHits++;
+          cacheHitTimestamps.push(Date.now());
+          pruneOlderThan(cacheHitTimestamps, 60_000);
+          return { lat: loc.lat, lon: loc.lon, data: hit.data, cached: true };
+        }
+
+        totals.cacheMisses++;
+        cacheMissTimestamps.push(Date.now());
+        pruneOlderThan(cacheMissTimestamps, 60_000);
+
+        try {
+          const url = `https://api.openweathermap.org/data/2.5/weather?lat=${loc.lat}&lon=${loc.lon}&units=${units}&appid=${API_KEY}`;
+          const data = await fetchJsonDedupe(key, url, 9000);
+          setCache(key, data, 3 * 60 * 1000, 15 * 60 * 1000);
+          return { lat: loc.lat, lon: loc.lon, data, cached: false };
+        } catch (e) {
+          return { lat: loc.lat, lon: loc.lon, error: e instanceof Error ? e.message : "Failed" };
+        }
+      })
+    );
+
+    recordRequest(routeKey, 200);
+    res.json({ data: results });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Server error";
     recordIncident({ ts: new Date().toISOString(), route: routeKey, kind: "server", message: msg });

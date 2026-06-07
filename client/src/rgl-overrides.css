@@ -1,5 +1,9 @@
+.react-grid-layout {
+  overflow: visible !important;
+}
+
 .react-grid-item {
-  overflow: visible;
+  overflow: visible !important;
 }
 
 .react-grid-item > div {
@@ -8,4 +12,12 @@
 
 .react-grid-item .MuiPaper-root {
   height: 100%;
+}
+
+.react-grid-item.react-draggable-dragging {
+  z-index: 1000 !important;
+}
+
+.react-grid-item.resizing {
+  z-index: 1000 !important;
 }

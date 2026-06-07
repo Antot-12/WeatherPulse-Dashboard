@@ -394,6 +394,45 @@ export async function getMetrics(options?: MetricsOptions): Promise<Metrics> {
   });
 }
 
+export type BatchLocation = { lat: number; lon: number };
+export type BatchResult = {
+  lat: number;
+  lon: number;
+  data?: CurrentWeather;
+  error?: string;
+  cached?: boolean;
+};
+export type BatchResponse = { data: BatchResult[] };
+
+export type BatchOptions = {
+  units?: Units;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
+export async function getBatchWeather(
+  locations: BatchLocation[],
+  options?: BatchOptions
+): Promise<BatchResponse> {
+  const units = options?.units ?? "metric";
+
+  const response = await fetch("/api/weather/batch", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ locations, units }),
+    signal: options?.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
 export function createAbortableRequest() {
   const controller = new AbortController();
   return {
