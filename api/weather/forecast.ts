@@ -38,7 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const cacheKey = `forecast:${lat}:${lon}:${units}`;
     const cached = getCache(cacheKey);
     if (cached) {
-      return res.json({ source: 'cache', data: cached });
+      return res.json(cached);
     }
 
     const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
@@ -50,7 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const data = await response.json();
     setCache(cacheKey, data, 10 * 60 * 1000);
-    return res.json({ source: 'live', data });
+    return res.json(data);
   } catch (e) {
     return res.status(500).json({ error: e instanceof Error ? e.message : 'Server error' });
   }
