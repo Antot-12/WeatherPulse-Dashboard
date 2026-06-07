@@ -3,7 +3,17 @@ import cors from "cors";
 import "dotenv/config";
 
 const app = express();
-app.use(cors());
+
+// CORS configuration - allow all origins for API access
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Accept"]
+}));
+
+// Handle preflight requests
+app.options("*", cors());
+
 app.use(express.json());
 
 const API_KEY = process.env.OPENWEATHER_API_KEY;
