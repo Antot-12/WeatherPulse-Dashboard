@@ -37,12 +37,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).end();
   }
 
-  const { path } = req.query;
-  const pathStr = Array.isArray(path) ? path.join('/') : path || '';
+  // Get path from URL, removing /api/ prefix
+  const url = req.url || '';
+  const pathMatch = url.match(/\/api\/(.+?)(?:\?|$)/);
+  const pathStr = pathMatch ? pathMatch[1] : '';
+
+  console.log('Request URL:', url, 'Path:', pathStr);
 
   try {
     // /api/geocode
-    if (pathStr === 'geocode' || pathStr === '') {
+    if (pathStr === 'geocode') {
       const q = String(req.query.q || '').trim();
       const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 5));
 
@@ -56,8 +60,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.json({ source: 'cache', data: cached });
       }
 
-      const url = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(q)}&limit=${limit}&appid=${API_KEY}`;
-      const data = await fetchJson(url);
+      const apiUrl = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(q)}&limit=${limit}&appid=${API_KEY}`;
+      const data = await fetchJson(apiUrl);
       setCache(cacheKey, data, 10 * 60 * 1000);
       return res.json({ source: 'live', data });
     }
@@ -78,8 +82,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.json({ source: 'cache', data: cached });
       }
 
-      const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
-      const data = await fetchJson(url);
+      const apiUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
+      const data = await fetchJson(apiUrl);
       setCache(cacheKey, data, 3 * 60 * 1000);
       return res.json({ source: 'live', data });
     }
@@ -100,8 +104,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.json({ source: 'cache', data: cached });
       }
 
-      const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
-      const data = await fetchJson(url);
+      const apiUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=${units}&appid=${API_KEY}`;
+      const data = await fetchJson(apiUrl);
       setCache(cacheKey, data, 10 * 60 * 1000);
       return res.json({ source: 'live', data });
     }
@@ -128,8 +132,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
 
           try {
-            const url = `https://api.openweathermap.org/data/2.5/weather?lat=${loc.lat}&lon=${loc.lon}&units=${units}&appid=${API_KEY}`;
-            const data = await fetchJson(url);
+            const apiUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${loc.lat}&lon=${loc.lon}&units=${units}&appid=${API_KEY}`;
+            const data = await fetchJson(apiUrl);
             setCache(cacheKey, data, 3 * 60 * 1000);
             return { lat: loc.lat, lon: loc.lon, data, cached: false };
           } catch (e) {
@@ -184,7 +188,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    return res.status(404).json({ error: 'Not found', path: pathStr });
+    return res.status(404).json({ error: 'Not found', path: pathStr, url });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e instanceof Error ? e.message : 'Server error' });
